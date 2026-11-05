@@ -72,7 +72,8 @@ async def video_generator_node(state: AgentState) -> dict:
                 session.add(asset_obj)
                 await session.commit()
         except Exception as e:
-            logger.warning(f"保存视频资产异常: {str(e)}")
+            logger.error("Video persistence failed: task_id=%s, error=%s", task_id, type(e).__name__)
+            raise
 
     elapsed_ms = int((time.time() - start_time) * 1000)
 

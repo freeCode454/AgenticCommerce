@@ -14,6 +14,8 @@ from app.models.compliance import ComplianceReport
 from app.models.task import Task
 from app.prompt.templates import load_prompt_template
 from sqlalchemy import update
+from app.core.compliance import parse_review, rule_violations
+from app.clients.provider_factory import ProviderCallError
 
 logger = logging.getLogger("quality_reviewer_node")
 
@@ -56,32 +58,36 @@ async def quality_reviewer_node(state: AgentState) -> dict:
     system_prompt = load_prompt_template("quality_reviewer") or "你是一位出海电商质检专家，具备严格的国际商标法、亚马逊合规政策与广告法审核能力。"
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "human", "content": prompt_human}
+        {"role": "user", "content": prompt_human}
     ]
 
-    llm_res = await llm_client.chat_completion(messages, model="qwen-plus")
-    content = llm_res.get("content", "")
-
-    # 解析审核 JSON 结果 (带安全容错)
-    score = 96.0
-    passed = 1
-    dimensions = {"brand_consistency": 95.0, "platform_compliance": 96.0, "readability": 98.0, "visual_quality": 95.0}
-    violations = []
-    suggestions = ["全套出海素材达到 S 级上线标准，文案无极限违禁词。"]
-
+    # 审核异常必须阻断，不能将不可用的模型结果当作通过。
+    score, passed, dimensions = 0.0, 0, {}
+    violations, suggestions = [], []
+    llm_res = {}
     try:
-        if "{" in content and "}" in content:
-            json_str = content[content.find("{"):content.rfind("}")+1]
-            parsed = json.loads(json_str)
-            score = float(parsed.get("score", score))
-            passed = int(parsed.get("passed", passed))
-            dimensions = parsed.get("dimensions", dimensions)
-            violations = parsed.get("violations", violations)
-            suggestions = parsed.get("suggestions", suggestions)
-    except Exception as e:
-        logger.warning(f"解析审核 JSON 失败，采用默认合格配置: {str(e)}")
+        llm_res = await llm_client.chat_completion(messages, model="qwen-plus")
+        parsed = parse_review(llm_res.get("content", ""))
+        score, passed, dimensions = parsed.score, parsed.passed, parsed.dimensions
+        violations, suggestions = list(parsed.violations), list(parsed.suggestions)
+        if llm_res.get("is_mock"):
+            violations.append("模拟审核结果不可自动批准交付")
+    except (ValueError, TypeError, KeyError, IndexError, ProviderCallError):
+        violations = ["审核服务不可用或返回格式无效"]
+        suggestions = ["请重试审核或交由人工复核"]
+        logger.warning("Review unavailable or invalid: task_id=%s", task_id)
 
-    is_passed = (score >= 85.0) and (len(violations) == 0)
+    violations.extend(rule_violations(" ".join([
+        str(creative_plan.get("title", "")), str(creative_plan.get("bullets", [])),
+        str(creative_plan.get("description", "")),
+    ])))
+    media_type = (state.get("config") or {}).get("media_type", "both")
+    if media_type in {"image", "both"} and (not images or any(not a.get("url") or a.get("is_mock") for a in images)):
+        violations.append("缺少真实图片产物")
+    if media_type in {"video", "both"} and (not video or not video.get("url") or video.get("is_mock")):
+        violations.append("缺少真实视频产物")
+    is_passed = passed == 1 and score >= 85.0 and not violations
+    next_retry_count = retry_count + (0 if is_passed else 1)
 
     # 持久化写入 ac_compliance_report 表
     if task_id and sku_id:
@@ -101,15 +107,16 @@ async def quality_reviewer_node(state: AgentState) -> dict:
                 session.add(report_obj)
 
                 # 更新任务主表状态
-                new_status = "completed" if is_passed else ("retrying" if retry_count < state.get("max_retries", 2) else "failed")
+                new_status = "completed" if is_passed else ("retrying" if next_retry_count < state.get("max_retries", 2) else "failed")
                 await session.execute(
                     update(Task)
-                    .where(Task.id == task_id)
-                    .values(status=new_status, retry_count=retry_count)
+                    .where(Task.id == task_id, Task.tenant_id == tenant_id, Task.is_deleted == 0)
+                    .values(status=new_status, retry_count=next_retry_count)
                 )
                 await session.commit()
         except Exception as e:
-            logger.warning(f"保存审核报告记录异常: {str(e)}")
+            logger.error("Review persistence failed: task_id=%s, error=%s", task_id, type(e).__name__)
+            raise
 
     elapsed_ms = int((time.time() - start_time) * 1000)
     current_report = {
@@ -144,5 +151,5 @@ async def quality_reviewer_node(state: AgentState) -> dict:
         "quality_reports": reports,
         "is_passed": is_passed,
         "violations": violations,
-        "retry_count": retry_count + (0 if is_passed else 1),
+        "retry_count": next_retry_count,
     }

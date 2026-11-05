@@ -26,4 +26,13 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 def decode_token(token: str) -> Dict[str, Any]:
-    return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+    payload = jwt.decode(
+        token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM],
+        options={"require": ["exp", "type", "user_id", "tenant_id"]},
+    )
+    if payload.get("type") != "access" or any(
+        not isinstance(payload.get(key), str) or not payload[key].strip()
+        for key in ("user_id", "tenant_id")
+    ):
+        raise jwt.InvalidTokenError("Invalid access-token identity")
+    return payload

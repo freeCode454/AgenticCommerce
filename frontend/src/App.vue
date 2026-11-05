@@ -79,8 +79,8 @@
         <div class="user-pill">
           <div class="user-avatar">JD</div>
           <div class="user-meta">
-            <span class="user-name">系统管理员</span>
-            <span class="user-role">Enterprise Admin</span>
+            <span class="user-name">{{ userStore.userInfo?.name || '已登录用户' }}</span>
+            <span class="user-role">{{ userStore.userInfo?.role || '' }}</span>
           </div>
         </div>
       </div>
@@ -90,12 +90,12 @@
     <div class="main-wrapper">
       <header class="top-header">
         <div class="header-left">
-          <span class="tenant-badge">🏢 环球出海科技有限公司</span>
-          <span class="env-tag">Dev (Port: 8002)</span>
+          <span class="tenant-badge">🏢 {{ userStore.userInfo?.tenant_name || '当前企业' }}</span>
+          <span class="env-tag">内容工作台</span>
         </div>
         <div class="header-right">
           <router-link to="/tasks" class="btn btn-primary btn-sm">+ 快速发起生成</router-link>
-          <router-link to="/login" class="btn btn-secondary btn-sm">退出</router-link>
+          <router-link to="/login" class="btn btn-secondary btn-sm" @click="userStore.clearToken()">退出</router-link>
         </div>
       </header>
 
@@ -107,8 +107,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { useUserStore } from '@/stores/user'
+const userStore = useUserStore()
+watch(() => userStore.token, token => {
+  if (token) userStore.fetchUser().catch(() => {})
+}, { immediate: true })
 
 const route = useRoute()
 const isLoginPage = computed(() => route.path === '/login')

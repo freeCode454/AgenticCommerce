@@ -40,7 +40,7 @@ async def list_packages(
 
     items = []
     for t in tasks:
-        sku_res = await db.execute(select(Sku.name, Sku.code).where(Sku.id == t.sku_id))
+        sku_res = await db.execute(select(Sku.name, Sku.code).where(Sku.id == t.sku_id, Sku.tenant_id == tenant_id, Sku.is_deleted == 0))
         sku_info = sku_res.first()
         items.append({
             "task_id": t.id,
@@ -66,19 +66,25 @@ async def export_package(
 ):
     """导出并打包任务全量交付物 (文案 JSON + 图像资产清单 + 视频 + 质检报告)"""
     tenant_id = user_tenant["tenant_id"]
-    t_res = await db.execute(select(Task).where(Task.id == req.task_id, Task.tenant_id == tenant_id))
+    t_res = await db.execute(select(Task).where(Task.id == req.task_id, Task.tenant_id == tenant_id, Task.is_deleted == 0))
     task = t_res.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if task.status != "completed":
+        raise HTTPException(status_code=409, detail="任务尚未完成或需要重新审核")
 
-    copy_res = await db.execute(select(Copy).where(Copy.task_id == req.task_id))
+    copy_res = await db.execute(select(Copy).where(Copy.task_id == req.task_id, Copy.tenant_id == tenant_id, Copy.is_deleted == 0).order_by(Copy.create_time.desc(), Copy.id.desc()).limit(1))
     copy_obj = copy_res.scalar_one_or_none()
 
-    assets_res = await db.execute(select(Asset).where(Asset.task_id == req.task_id))
+    assets_res = await db.execute(select(Asset).where(Asset.task_id == req.task_id, Asset.tenant_id == tenant_id, Asset.is_deleted == 0))
     assets = assets_res.scalars().all()
 
-    report_res = await db.execute(select(ComplianceReport).where(ComplianceReport.task_id == req.task_id))
+    report_res = await db.execute(select(ComplianceReport).where(ComplianceReport.task_id == req.task_id, ComplianceReport.tenant_id == tenant_id, ComplianceReport.is_deleted == 0).order_by(ComplianceReport.create_time.desc(), ComplianceReport.id.desc()).limit(1))
     report_obj = report_res.scalar_one_or_none()
+    if report_obj is None or report_obj.passed != 1 or report_obj.status != "passed":
+        raise HTTPException(status_code=409, detail="交付前必须通过最新审核")
+    if copy_obj is None or not assets or any(a.is_mock for a in assets):
+        raise HTTPException(status_code=409, detail="缺少真实交付物")
 
     package_content = {
         "task_id": task.id,
@@ -98,11 +104,11 @@ async def export_package(
             "passed": report_obj.passed if report_obj else 0,
             "suggestions": report_obj.suggestions if report_obj else [],
         },
-        "download_archive_url": f"https://mock-storage.agentic.com/packages/{task.id}.zip"
+        "download_archive_url": None
     }
 
     return {
         "code": 200,
         "data": package_content,
-        "message": "交付包打包就绪"
+        "message": "交付清单已生成，归档下载尚未启用"
     }

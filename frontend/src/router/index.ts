@@ -24,4 +24,10 @@ const router = createRouter({
   routes
 })
 
+router.beforeEach(to => {
+  if (to.path !== '/login' && !localStorage.getItem('token')) {
+    return { path: '/login', query: { redirect: to.fullPath } }
+  }
+})
+
 export default router

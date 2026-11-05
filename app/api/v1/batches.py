@@ -5,7 +5,8 @@
 
 from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from app.api.task_config import TaskConfig
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_db, get_current_user_and_tenant
 from app.services.batch_service import BatchService
@@ -14,15 +15,9 @@ from app.api.v1.tasks import run_agent_workflow_background
 router = APIRouter(prefix="/batches", tags=["批次生成管理"])
 
 class BatchCreateRequest(BaseModel):
-    name: str
-    sku_ids: List[str]
-    config: Dict[str, Any] = {
-        "language": "en",
-        "platform": "amazon",
-        "model_llm": "qwen",
-        "model_image": "wanx",
-        "model_video": "kling"
-    }
+    name: str = Field(min_length=1, max_length=128)
+    sku_ids: List[str] = Field(min_length=1, max_length=100)
+    config: TaskConfig = Field(default_factory=TaskConfig)
 
 
 @router.get("")
@@ -50,7 +45,7 @@ async def create_batch(
     try:
         result = await svc.create_batch(
             tenant_id=user_tenant["tenant_id"], user_id=user_tenant.get("user_id"),
-            name=req.name, sku_ids=req.sku_ids, config=req.config,
+            name=req.name, sku_ids=req.sku_ids, config=req.config.model_dump(),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

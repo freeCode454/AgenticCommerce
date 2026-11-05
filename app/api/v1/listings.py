@@ -70,7 +70,7 @@ async def publish_listing(
 ):
     """向海外电商平台执行商品上架刊登"""
     tenant_id = user_tenant["tenant_id"]
-    sku_res = await db.execute(select(Sku).where(Sku.id == req.sku_id, Sku.tenant_id == tenant_id))
+    sku_res = await db.execute(select(Sku).where(Sku.id == req.sku_id, Sku.tenant_id == tenant_id, Sku.is_deleted == 0))
     if not sku_res.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="目标商品不存在")
 

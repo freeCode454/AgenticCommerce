@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.deps import get_db, get_current_user_and_tenant
+from app.core.deps import get_db, require_admin
 from app.models.provider import Provider
 from app.clients.provider_factory import ProviderFactory
 
@@ -22,7 +22,7 @@ class ProviderUpdateRequest(BaseModel):
 @router.get("")
 async def list_providers(
     db: AsyncSession = Depends(get_db),
-    user_tenant: dict = Depends(get_current_user_and_tenant),
+    user_tenant: dict = Depends(require_admin),
 ):
     """获取租户当前配置的模型厂商列表"""
     tenant_id = user_tenant["tenant_id"]
@@ -49,11 +49,11 @@ async def update_provider(
     provider_id: str,
     req: ProviderUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    user_tenant: dict = Depends(get_current_user_and_tenant),
+    user_tenant: dict = Depends(require_admin),
 ):
     """更新模型厂商 API Key 或参数配置"""
     tenant_id = user_tenant["tenant_id"]
-    res = await db.execute(select(Provider).where(Provider.id == provider_id, Provider.tenant_id == tenant_id))
+    res = await db.execute(select(Provider).where(Provider.id == provider_id, Provider.tenant_id == tenant_id, Provider.is_deleted == 0))
     prov = res.scalar_one_or_none()
     if not prov:
         raise HTTPException(status_code=404, detail="厂商配置不存在")
@@ -69,7 +69,7 @@ async def update_provider(
         update_fields["is_default"] = req.is_default
 
     if update_fields:
-        await db.execute(update(Provider).where(Provider.id == provider_id).values(**update_fields))
+        await db.execute(update(Provider).where(Provider.id == provider_id, Provider.tenant_id == tenant_id, Provider.is_deleted == 0).values(**update_fields))
         await db.commit()
 
     return {"code": 200, "data": {"id": provider_id}, "message": "模型厂商配置已保存"}
@@ -78,11 +78,11 @@ async def update_provider(
 async def test_provider_connection(
     provider_id: str,
     db: AsyncSession = Depends(get_db),
-    user_tenant: dict = Depends(get_current_user_and_tenant),
+    user_tenant: dict = Depends(require_admin),
 ):
     """在线连通性测试"""
     tenant_id = user_tenant["tenant_id"]
-    res = await db.execute(select(Provider).where(Provider.id == provider_id, Provider.tenant_id == tenant_id))
+    res = await db.execute(select(Provider).where(Provider.id == provider_id, Provider.tenant_id == tenant_id, Provider.is_deleted == 0))
     prov = res.scalar_one_or_none()
     if not prov:
         raise HTTPException(status_code=404, detail="厂商配置不存在")

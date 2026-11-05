@@ -56,7 +56,11 @@ async function downloadPackage(taskId: string) {
   try {
     const res = await client.post('/packages/export', { task_id: taskId })
     const data = res.data?.data
-    alert(`交付物料包打包就绪！\n包含: ${data?.media_assets?.length} 个媒体素材与文案\n下载链接: ${data?.download_archive_url}`)
+    if (!data?.download_archive_url) {
+      alert(res.data?.message || '归档下载尚未启用')
+      return
+    }
+    window.location.assign(data.download_archive_url)
   } catch (e) {
     alert('打包失败')
   }

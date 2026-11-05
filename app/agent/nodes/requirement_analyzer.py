@@ -29,8 +29,8 @@ async def requirement_analyzer_node(state: AgentState) -> dict:
     try:
         query_vector = await llm_client.get_embedding(search_query)
     except Exception as e:
-        logger.warning(f"获取 Embedding 异常: {str(e)}")
-        query_vector = [0.0] * 1024 # 兜底向量
+        logger.warning("Embedding failed: task_id=%s, error=%s", task_id, type(e).__name__)
+        raise
 
     # 2. RAG 知识检索 (真实语义向量检索品牌规范与本土化调性)
     rag_context = ""
@@ -47,7 +47,8 @@ async def requirement_analyzer_node(state: AgentState) -> dict:
             if chunks:
                 rag_context = "\n".join([c.content for c in chunks])
     except Exception as e:
-        logger.warning(f"RAG 检索知识分块异常: {str(e)}")
+        logger.warning("RAG retrieval failed: task_id=%s, error=%s", task_id, type(e).__name__)
+        raise
     prompt_human = f"""
 请基于以下商品信息与品牌规范，进行出海电商需求深度分析：
 【商品名称】: {sku_data.get('name', '户外商品')}

@@ -26,20 +26,17 @@ async def record_node_execution(
     progress: int = 0,
 ):
     """持久化保存节点运行快照，并向前端工作台广播实时进度"""
-    # 1. 广播 WebSocket 状态
-    event = {
-        "type": "node_update",
-        "task_id": task_id,
+    payload = {
         "node_name": node_name,
         "status": status,
         "progress": progress,
         "elapsed_ms": elapsed_ms,
         "cost": cost,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
         "output_data": output_data or {},
     }
-    await ws_manager.broadcast(event)
-
-    # 2. 如果存在关联的任务 ID，则持久化写入 PostgreSQL
+    # Commit first; clients must never see success before persistence succeeds.
     if task_id:
         try:
             async with AsyncSessionLocal() as session:
@@ -61,9 +58,13 @@ async def record_node_execution(
                 # 同步更新任务的当前节点与重试进度
                 await session.execute(
                     update(Task)
-                    .where(Task.id == task_id)
+                    .where(Task.id == task_id, Task.tenant_id == tenant_id, Task.is_deleted == 0)
                     .values(current_node=node_name)
                 )
                 await session.commit()
         except Exception as e:
-            logger.warning(f"持久化记录节点 {node_name} 执行快照失败: {str(e)}")
+            logger.error("Node persistence failed: task_id=%s, node=%s, error=%s", task_id, node_name, type(e).__name__)
+            raise
+    await ws_manager.broadcast(
+        {"type": "node_update", "task_id": task_id, "payload": payload}, tenant_id=tenant_id,
+    )

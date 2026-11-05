@@ -69,7 +69,7 @@ class KnowledgeService(BaseService):
     async def get_doc_detail(self, tenant_id: str, doc_id: str) -> dict:
         res = await self.session.execute(
             select(KnowledgeBaseDoc).where(
-                KnowledgeBaseDoc.id == doc_id, KnowledgeBaseDoc.tenant_id == tenant_id
+                KnowledgeBaseDoc.id == doc_id, KnowledgeBaseDoc.tenant_id == tenant_id, KnowledgeBaseDoc.is_deleted == 0
             )
         )
         d = res.scalar_one_or_none()
@@ -77,7 +77,7 @@ class KnowledgeService(BaseService):
             raise ValueError("文档不存在")
 
         chunks_res = await self.session.execute(
-            select(KnowledgeChunk).where(KnowledgeChunk.doc_id == doc_id)
+            select(KnowledgeChunk).where(KnowledgeChunk.doc_id == doc_id, KnowledgeChunk.tenant_id == tenant_id, KnowledgeChunk.is_deleted == 0)
         )
         chunks = chunks_res.scalars().all()
 
@@ -94,7 +94,7 @@ class KnowledgeService(BaseService):
 
         query = (
             select(KnowledgeChunk)
-            .where(KnowledgeChunk.tenant_id == tenant_id)
+            .where(KnowledgeChunk.tenant_id == tenant_id, KnowledgeChunk.is_deleted == 0, KnowledgeChunk.embedding.is_not(None))
             .order_by(KnowledgeChunk.embedding.cosine_distance(q_vec))
             .limit(top_k)
         )

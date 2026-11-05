@@ -7,6 +7,7 @@ import logging
 from sqlalchemy import select
 from app.clients.postgres import AsyncSessionLocal
 from app.core.security import get_password_hash
+from app.conf.config import settings
 from app.models import (
     Tenant, User, Provider, Sku, KnowledgeBaseDoc, KnowledgeChunk
 )
@@ -15,6 +16,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("seed_data")
 
 async def seed_data():
+    if settings.is_production:
+        raise RuntimeError("Demo seed data is only available in dev/test")
+    if len(settings.BOOTSTRAP_ADMIN_PASSWORD) < 12:
+        raise RuntimeError("Set BOOTSTRAP_ADMIN_PASSWORD to at least 12 characters in .env.local")
     logger.info("正在检查并导入初始演示数据...")
     async with AsyncSessionLocal() as session:
         # 1. 检查或创建默认租户
@@ -31,20 +36,20 @@ async def seed_data():
             logger.info("创建默认租户: 环球出海科技有限公司 (ID: tenant_default)")
 
         # 2. 检查或创建初始管理员
-        user_res = await session.execute(select(User).where(User.email == "admin@agentic.com"))
+        user_res = await session.execute(select(User).where(User.email == settings.BOOTSTRAP_ADMIN_EMAIL, User.tenant_id == "tenant_default"))
         user = user_res.scalar_one_or_none()
         if not user:
             user = User(
                 id="usr_admin",
                 tenant_id="tenant_default",
                 name="系统管理员",
-                email="admin@agentic.com",
-                password=get_password_hash("admin123"),
+                email=settings.BOOTSTRAP_ADMIN_EMAIL,
+                password=get_password_hash(settings.BOOTSTRAP_ADMIN_PASSWORD),
                 role="admin",
                 status="active"
             )
             session.add(user)
-            logger.info("创建初始管理员: admin@agentic.com / 初始密码: admin123")
+            logger.info("创建初始管理员；凭据仅保存在本地配置中")
 
         # 3. 初始模型厂商配置 (Qwen / Wanx / Kling)
         providers_data = [
@@ -147,12 +152,12 @@ async def seed_data():
                 doc_type="brand_guideline",
                 name="环球出海北美品牌调性与合规文案规范",
                 file_path="docs/brand_guideline_na.md",
-                vector_status="indexed"
+                vector_status="pending"
             )
             session.add(doc)
 
             # 伪 1024 维归一化向量，供 pgvector 演示余弦相似度检索
-            embedding_vector = [0.03125] * 1024
+            embedding_vector = None
             chunk = KnowledgeChunk(
                 id="chunk_brand01_1",
                 tenant_id="tenant_default",

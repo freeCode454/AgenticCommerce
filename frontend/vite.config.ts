@@ -1,8 +1,11 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, resolve(__dirname, '..'), '')
+  const backend = `http://127.0.0.1:${env.APP_PORT || '8002'}`
+  return {
   plugins: [vue()],
   resolve: {
     alias: {
@@ -10,17 +13,20 @@ export default defineConfig({
     }
   },
   server: {
-    port: 5173,
-    host: '0.0.0.0',
+    port: Number(env.FRONTEND_PORT || 5174),
+    strictPort: true,
+    host: '127.0.0.1',
     proxy: {
-      '/api': {
-        target: 'http://127.0.0.1:8002',
+      '/api/v1/ws': {
+        target: backend,
+        ws: true,
         changeOrigin: true
       },
-      '/api/v1/ws': {
-        target: 'ws://127.0.0.1:8002',
-        ws: true
+      '/api': {
+        target: backend,
+        changeOrigin: true
       }
     }
+  }
   }
 })

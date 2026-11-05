@@ -191,6 +191,9 @@ const runningElapsedMs = ref(0)
 let timerInterval: any = null
 
 let ws: WebSocket | null = null
+let heartbeat: ReturnType<typeof setInterval> | null = null
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+let disposed = false
 
 const agentNodes = [
   { key: 'orchestrator', name: '总控调度', desc: '全局编排与SKU挂载', icon: '🧭' },
@@ -261,10 +264,19 @@ function initWebSocket() {
   const wsUrl = `${protocol}//${window.location.host}/api/v1/ws/tasks/${taskId.value}`
   
   ws = new WebSocket(wsUrl)
+  ws.onopen = () => {
+    ws?.send(JSON.stringify({ type: 'authenticate', token: localStorage.getItem('token') || '' }))
+  }
   ws.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data)
-      if (data.type === 'node_update') {
+      if (data.type === 'authenticated') {
+        fetchTaskDetail()
+        if (heartbeat) clearInterval(heartbeat)
+        heartbeat = setInterval(() => {
+          if (ws?.readyState === WebSocket.OPEN) ws.send('ping')
+        }, 25000)
+      } else if (data.type === 'node_update') {
         const payload = data.payload
         // 更新或插入 nodeRuns
         const idx = nodeRuns.value.findIndex(r => r.node_name === payload.node_name)
@@ -296,8 +308,12 @@ function initWebSocket() {
     }
   }
   
-  ws.onclose = () => {
-    console.log('WS 连接已断开')
+  ws.onclose = (event) => {
+    if (heartbeat) clearInterval(heartbeat)
+    heartbeat = null
+    if (!disposed && ![4401, 4403, 4404].includes(event.code)) {
+      reconnectTimer = setTimeout(initWebSocket, 3000)
+    }
   }
 }
 
@@ -327,6 +343,9 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  disposed = true
+  if (heartbeat) clearInterval(heartbeat)
+  if (reconnectTimer) clearTimeout(reconnectTimer)
   if (ws) ws.close()
   if (timerInterval) clearInterval(timerInterval)
 })

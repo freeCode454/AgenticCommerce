@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 from sqlalchemy import select, update
 from app.services.base import BaseService
 from app.models.task import Task
+from app.models.batch import Batch
 from app.models.sku import Sku
 from app.models.task_node_run import TaskNodeRun
 from app.models.copy import Copy
@@ -36,7 +37,7 @@ class TaskService(BaseService):
 
         result = []
         for t in items:
-            sku_res = await self.session.execute(select(Sku.name, Sku.code).where(Sku.id == t.sku_id))
+            sku_res = await self.session.execute(select(Sku.name, Sku.code).where(Sku.id == t.sku_id, Sku.tenant_id == tenant_id, Sku.is_deleted == 0))
             sku_info = sku_res.first()
             result.append({
                 "id": t.id, "sku_id": t.sku_id,
@@ -56,10 +57,14 @@ class TaskService(BaseService):
     ) -> dict:
         """创建任务记录，验证 SKU 存在性，返回 task_id 供路由层调度工作流"""
         sku_check = await self.session.execute(
-            select(Sku).where(Sku.id == sku_id, Sku.tenant_id == tenant_id)
+            select(Sku).where(Sku.id == sku_id, Sku.tenant_id == tenant_id, Sku.is_deleted == 0)
         )
         if not sku_check.scalar_one_or_none():
             raise ValueError("目标商品 SKU 不存在")
+        if batch_id and (await self.session.execute(select(Batch).where(
+            Batch.id == batch_id, Batch.tenant_id == tenant_id, Batch.is_deleted == 0,
+        ))).scalar_one_or_none() is None:
+            raise ValueError("目标批次不存在")
 
         task_id = f"task_{generate_uuid32()[:12]}"
         task = Task(
@@ -76,17 +81,17 @@ class TaskService(BaseService):
     async def get_task_detail(self, tenant_id: str, task_id: str) -> dict:
         """聚合查询: 任务 + 文案 + 素材资产 + 质检报告"""
         res = await self.session.execute(
-            select(Task).where(Task.id == task_id, Task.tenant_id == tenant_id)
+            select(Task).where(Task.id == task_id, Task.tenant_id == tenant_id, Task.is_deleted == 0)
         )
         task = res.scalar_one_or_none()
         if not task:
             raise ValueError("任务不存在")
 
         # 关联查询
-        copy_obj = (await self.session.execute(select(Copy).where(Copy.task_id == task_id))).scalar_one_or_none()
-        assets = (await self.session.execute(select(Asset).where(Asset.task_id == task_id))).scalars().all()
-        report_obj = (await self.session.execute(select(ComplianceReport).where(ComplianceReport.task_id == task_id))).scalar_one_or_none()
-        sku_obj = (await self.session.execute(select(Sku).where(Sku.id == task.sku_id))).scalar_one_or_none()
+        copy_obj = (await self.session.execute(select(Copy).where(Copy.task_id == task_id, Copy.tenant_id == tenant_id, Copy.is_deleted == 0).order_by(Copy.create_time.desc(), Copy.id.desc()).limit(1))).scalar_one_or_none()
+        assets = (await self.session.execute(select(Asset).where(Asset.task_id == task_id, Asset.tenant_id == tenant_id, Asset.is_deleted == 0))).scalars().all()
+        report_obj = (await self.session.execute(select(ComplianceReport).where(ComplianceReport.task_id == task_id, ComplianceReport.tenant_id == tenant_id, ComplianceReport.is_deleted == 0).order_by(ComplianceReport.create_time.desc(), ComplianceReport.id.desc()).limit(1))).scalar_one_or_none()
+        sku_obj = (await self.session.execute(select(Sku).where(Sku.id == task.sku_id, Sku.tenant_id == tenant_id, Sku.is_deleted == 0))).scalar_one_or_none()
 
         return {
             "task": {
@@ -116,7 +121,7 @@ class TaskService(BaseService):
         """获取任务节点执行明细"""
         query = (
             select(TaskNodeRun)
-            .where(TaskNodeRun.task_id == task_id, TaskNodeRun.tenant_id == tenant_id)
+            .where(TaskNodeRun.task_id == task_id, TaskNodeRun.tenant_id == tenant_id, TaskNodeRun.is_deleted == 0)
             .order_by(TaskNodeRun.create_time.asc())
         )
         result = await self.session.execute(query)
@@ -134,14 +139,19 @@ class TaskService(BaseService):
     async def retrigger_task(self, tenant_id: str, task_id: str) -> dict:
         """重新触发任务，返回 task 信息供路由层调度"""
         res = await self.session.execute(
-            select(Task).where(Task.id == task_id, Task.tenant_id == tenant_id)
+            select(Task).where(Task.id == task_id, Task.tenant_id == tenant_id, Task.is_deleted == 0)
         )
         task = res.scalar_one_or_none()
         if not task:
             raise ValueError("任务不存在")
+        if task.status in {"running", "retrying"}:
+            raise ValueError("任务正在执行，请勿重复触发")
 
-        await self.session.execute(
-            update(Task).where(Task.id == task_id).values(status="running", current_node="orchestrator")
+        claimed = await self.session.execute(
+            update(Task).where(Task.id == task_id, Task.tenant_id == tenant_id, Task.is_deleted == 0, Task.status == task.status).values(status="running", current_node="orchestrator")
         )
+        if claimed.rowcount != 1:
+            await self.session.rollback()
+            raise ValueError("任务已由其他请求触发，请刷新状态")
         await self.session.commit()
         return {"task_id": task_id, "sku_id": task.sku_id, "config": task.config or {}}

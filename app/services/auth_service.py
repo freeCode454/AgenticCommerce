@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.base import BaseService
 from app.core.security import verify_password, create_access_token
 from app.models.user import User
+from app.models.tenant import Tenant
 
 logger = logging.getLogger("auth_service")
 
@@ -30,6 +31,12 @@ class AuthService(BaseService):
 
         if user.status != "active":
             raise ValueError("用户账号已被禁用")
+
+        tenant = (await self.session.execute(select(Tenant).where(
+            Tenant.id == user.tenant_id, Tenant.is_deleted == 0, Tenant.status == "active",
+        ))).scalar_one_or_none()
+        if tenant is None:
+            raise ValueError("租户不可用")
 
         token_payload = {
             "user_id": user.id,
@@ -56,5 +63,7 @@ class AuthService(BaseService):
     @staticmethod
     def refresh_token(user_payload: dict) -> dict:
         """基于现有 payload 签发新 Token"""
-        new_token = create_access_token(user_payload)
+        new_token = create_access_token({
+            key: value for key, value in user_payload.items() if key not in {"exp", "iat", "nbf"}
+        })
         return {"access_token": new_token, "token_type": "bearer"}

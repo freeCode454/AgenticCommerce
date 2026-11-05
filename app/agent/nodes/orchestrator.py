@@ -27,7 +27,7 @@ async def orchestrator_node(state: AgentState) -> dict:
     if not sku_data and sku_id:
         try:
             async with AsyncSessionLocal() as session:
-                res = await session.execute(select(Sku).where(Sku.id == sku_id))
+                res = await session.execute(select(Sku).where(Sku.id == sku_id, Sku.tenant_id == tenant_id, Sku.is_deleted == 0))
                 sku_obj = res.scalar_one_or_none()
                 if sku_obj:
                     sku_data = {

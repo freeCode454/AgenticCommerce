@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import client from '@/api/client'
 
 export const useUserStore = defineStore('user', () => {
   const token = ref<string | null>(localStorage.getItem('token'))
@@ -16,5 +17,10 @@ export const useUserStore = defineStore('user', () => {
     localStorage.removeItem('token')
   }
 
-  return { token, userInfo, setToken, clearToken }
+  async function fetchUser() {
+    const response = await client.get('/auth/me')
+    userInfo.value = response.data.data
+  }
+
+  return { token, userInfo, setToken, clearToken, fetchUser }
 })

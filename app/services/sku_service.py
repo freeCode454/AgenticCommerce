@@ -73,7 +73,7 @@ class SkuService(BaseService):
         await self._get_or_404(tenant_id, sku_id)
         clean = {k: v for k, v in update_data.items() if v is not None}
         if clean:
-            await self.session.execute(update(Sku).where(Sku.id == sku_id).values(**clean))
+            await self.session.execute(update(Sku).where(Sku.id == sku_id, Sku.tenant_id == tenant_id, Sku.is_deleted == 0).values(**clean))
             await self.session.commit()
         return sku_id
 

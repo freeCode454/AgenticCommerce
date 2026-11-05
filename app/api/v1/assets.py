@@ -4,7 +4,7 @@
 """
 
 from typing import Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_db, get_current_user_and_tenant
@@ -46,11 +46,14 @@ async def create_asset(
 ):
     """手动上传/登记素材"""
     svc = AssetService(db)
-    asset_id = await svc.create_asset(
-        tenant_id=user_tenant["tenant_id"], user_id=user_tenant.get("user_id"),
-        sku_id=req.sku_id, type=req.type, url=req.url,
-        task_id=req.task_id, sub_type=req.sub_type, meta=req.meta,
-    )
+    try:
+        asset_id = await svc.create_asset(
+            tenant_id=user_tenant["tenant_id"], user_id=user_tenant.get("user_id"),
+            sku_id=req.sku_id, type=req.type, url=req.url,
+            task_id=req.task_id, sub_type=req.sub_type, meta=req.meta,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
     return {"code": 200, "data": {"id": asset_id}, "message": "素材登记成功"}
 
 

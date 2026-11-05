@@ -159,12 +159,12 @@ async function loadData() {
 
     recentTasks.value = tasksRes.data?.data?.items || []
     stats.value.taskCount = tasksRes.data?.data?.total || recentTasks.value.length
-    stats.value.skuCount = skusRes.data?.data?.total || 2
-    stats.value.assetCount = assetsRes.data?.data?.total || 4
+    stats.value.skuCount = skusRes.data?.data?.total ?? 0
+    stats.value.assetCount = assetsRes.data?.data?.total ?? 0
 
     const costData = costRes.data?.data || {}
-    stats.value.tokens = costData.total_tokens || 1760
-    stats.value.cost = costData.total_cost_usd?.toFixed(4) || '0.0140'
+    stats.value.tokens = costData.total_tokens ?? 0
+    stats.value.cost = costData.total_cost_usd?.toFixed(4) ?? '0.0000'
   } catch (e) {
     console.error('加载总览大盘数据失败', e)
   }

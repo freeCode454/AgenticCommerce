@@ -1,5 +1,7 @@
 # AgenticCommerce — 智能跨境电商融合平台
 
+> **当前开发状态（2026-11-05）**：已补充独立本地启动、安全基线和数据库迁移，完整说明见 [本地开发与安全基线](docs/10_本地开发与安全基线.md)。Windows 本机执行 `pwsh -NoProfile -File scripts/dev.ps1 -Action Start`，前端默认 `http://127.0.0.1:5174`，管理员凭据保存在不提交的 `.env.local`。真实生成交付闭环和生产部署仍在开发中；下文部分历史功能说明是规划，不能作为已经通过的验收结果。
+
 <div align="center">
 
 **自主智能体电商内容生成中台 (CBCF Platform)**  

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.services.base import BaseService
 from app.models.batch import Batch
 from app.models.task import Task
+from app.models.sku import Sku
 from app.models.base import generate_uuid32
 
 logger = logging.getLogger("batch_service")
@@ -38,6 +39,13 @@ class BatchService(BaseService):
         if not sku_ids:
             raise ValueError("sku_ids 不能为空")
 
+        sku_ids = list(dict.fromkeys(sku_ids))
+        owned = (await self.session.execute(select(Sku.id).where(
+            Sku.id.in_(sku_ids), Sku.tenant_id == tenant_id, Sku.is_deleted == 0,
+        ))).scalars().all()
+        if set(owned) != set(sku_ids):
+            raise ValueError("部分商品 SKU 不存在或不可访问")
+
         batch_id = f"batch_{generate_uuid32()[:12]}"
         batch = Batch(
             id=batch_id, tenant_id=tenant_id, name=name,
@@ -64,13 +72,13 @@ class BatchService(BaseService):
 
     async def get_batch_detail(self, tenant_id: str, batch_id: str) -> dict:
         b_res = await self.session.execute(
-            select(Batch).where(Batch.id == batch_id, Batch.tenant_id == tenant_id)
+            select(Batch).where(Batch.id == batch_id, Batch.tenant_id == tenant_id, Batch.is_deleted == 0)
         )
         batch = b_res.scalar_one_or_none()
         if not batch:
             raise ValueError("批次不存在")
 
-        tasks_res = await self.session.execute(select(Task).where(Task.batch_id == batch_id))
+        tasks_res = await self.session.execute(select(Task).where(Task.batch_id == batch_id, Task.tenant_id == tenant_id, Task.is_deleted == 0))
         tasks = tasks_res.scalars().all()
 
         return {

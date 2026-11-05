@@ -21,9 +21,6 @@
         {{ loading ? '登录验证中...' : '立即登录' }}
       </button>
 
-      <button type="button" class="btn btn-secondary full-width mt-2" @click="fillDemoAccount">
-        ⚡ 一键填入系统管理员演示账号
-      </button>
     </form>
 
     <div class="login-footer mt-4">
@@ -41,14 +38,9 @@ import client from '@/api/client'
 const router = useRouter()
 const userStore = useUserStore()
 
-const email = ref('admin@agentic.com')
-const password = ref('admin123')
+const email = ref('')
+const password = ref('')
 const loading = ref(false)
-
-function fillDemoAccount() {
-  email.value = 'admin@agentic.com'
-  password.value = 'admin123'
-}
 
 async function handleLogin() {
   loading.value = true

@@ -88,7 +88,7 @@
 
         <div class="form-group">
           <label class="form-label">最大自主审核重试次数 (P-E-V 闭环)</label>
-          <input type="number" v-model="maxRetries" min="0" max="3" class="form-input" />
+          <input type="number" v-model="maxRetries" min="0" max="2" class="form-input" />
         </div>
 
         <div class="modal-footer mt-4">

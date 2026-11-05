@@ -6,11 +6,13 @@
 import logging
 from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
-from pydantic import BaseModel
-from sqlalchemy import select
+from pydantic import BaseModel, Field
+from app.api.task_config import TaskConfig
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_db, get_current_user_and_tenant
 from app.models.sku import Sku
+from app.models.task import Task
 from app.services.task_service import TaskService
 
 logger = logging.getLogger("tasks_api")
@@ -19,14 +21,7 @@ router = APIRouter(prefix="/tasks", tags=["生成任务调度"])
 class TaskCreateRequest(BaseModel):
     sku_id: str
     batch_id: Optional[str] = None
-    config: Dict[str, Any] = {
-        "language": "en",
-        "platform": "amazon",
-        "model_llm": "qwen",
-        "model_image": "wanx",
-        "model_video": "kling",
-        "max_retries": 2
-    }
+    config: TaskConfig = Field(default_factory=TaskConfig)
 
 
 async def run_agent_workflow_background(task_id: str, tenant_id: str, sku_id: str, config: dict):
@@ -35,11 +30,10 @@ async def run_agent_workflow_background(task_id: str, tenant_id: str, sku_id: st
         from app.agent.graph import app_workflow
         from app.clients.postgres import AsyncSessionLocal
         async with AsyncSessionLocal() as session:
-            sku_res = await session.execute(select(Sku).where(Sku.id == sku_id))
+            sku_res = await session.execute(select(Sku).where(Sku.id == sku_id, Sku.tenant_id == tenant_id, Sku.is_deleted == 0))
             sku = sku_res.scalar_one_or_none()
             if not sku:
-                logger.error(f"后台工作流执行失败: 找不到 SKU {sku_id}")
-                return
+                raise ValueError("SKU not found for tenant")
             sku_data = {
                 "id": sku.id, "code": sku.code, "name": sku.name,
                 "category": sku.category, "specs": sku.specs,
@@ -57,7 +51,13 @@ async def run_agent_workflow_background(task_id: str, tenant_id: str, sku_id: st
         await app_workflow.ainvoke(initial_state)
         logger.info(f"后台任务 {task_id} 顺利执行完成")
     except Exception as e:
-        logger.error(f"后台任务 {task_id} 执行遇到严重异常: {str(e)}")
+        logger.error("Workflow failed: task_id=%s, error=%s", task_id, type(e).__name__)
+        from app.clients.postgres import AsyncSessionLocal
+        async with AsyncSessionLocal() as session:
+            await session.execute(update(Task).where(
+                Task.id == task_id, Task.tenant_id == tenant_id, Task.is_deleted == 0,
+            ).values(status="failed", error_message=f"工作流执行失败 ({type(e).__name__})"))
+            await session.commit()
 
 
 @router.get("")
@@ -87,7 +87,7 @@ async def create_task(
     try:
         result = await svc.create_task(
             tenant_id=user_tenant["tenant_id"], user_id=user_tenant.get("user_id"),
-            sku_id=req.sku_id, batch_id=req.batch_id, config=req.config,
+            sku_id=req.sku_id, batch_id=req.batch_id, config=req.config.model_dump(),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -96,7 +96,7 @@ async def create_task(
     background_tasks.add_task(
         run_agent_workflow_background,
         task_id=result["task_id"], tenant_id=user_tenant["tenant_id"],
-        sku_id=req.sku_id, config=req.config,
+        sku_id=req.sku_id, config=req.config.model_dump(),
     )
     return {"code": 200, "data": {"task_id": result["task_id"], "status": "running", "message": "工作流已成功调度执行"}, "message": "任务创建成功"}
 

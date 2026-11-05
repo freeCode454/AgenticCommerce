@@ -89,7 +89,8 @@ async def creative_planner_node(state: AgentState) -> dict:
                 session.add(copy_obj)
                 await session.commit()
         except Exception as e:
-            logger.warning(f"保存 ac_copy 记录异常: {str(e)}")
+            logger.error("Copy persistence failed: task_id=%s, error=%s", task_id, type(e).__name__)
+            raise
 
     elapsed_ms = int((time.time() - start_time) * 1000)
     creative_plan = {

@@ -14,15 +14,15 @@
         <div class="info-list">
           <div class="info-item">
             <span class="info-k">租户 ID:</span>
-            <code class="info-v">tenant_default</code>
+            <code class="info-v">{{ status?.tenant_id || '加载中' }}</code>
           </div>
           <div class="info-item">
             <span class="info-k">企业全称:</span>
-            <span class="info-v">环球出海科技有限公司</span>
+            <span class="info-v">{{ status?.tenant_name || '加载中' }}</span>
           </div>
           <div class="info-item">
             <span class="info-k">服务等级 (Plan):</span>
-            <span class="badge badge-success">ENTERPRISE (旗舰版)</span>
+            <span class="info-v">以当前租户实际授权为准</span>
           </div>
           <div class="info-item">
             <span class="info-k">多租户隔离规范:</span>
@@ -50,21 +50,21 @@
             <tbody>
               <tr>
                 <td>PostgreSQL 16 + pgvector</td>
-                <td><code>agentic-postgres</code></td>
-                <td><strong>5434</strong> (宿主机 5432/5433 已隔离)</td>
-                <td><span class="badge badge-success">HEALTHY</span></td>
+                <td>PostgreSQL</td>
+                <td>独立测试环境</td>
+                <td>{{ status?.dependencies?.postgres || '未检测' }}</td>
               </tr>
               <tr>
                 <td>Redis 7 缓存与信号量</td>
-                <td><code>agentic-redis</code></td>
-                <td><strong>6381</strong> (宿主机 6379/6380 已隔离)</td>
-                <td><span class="badge badge-success">HEALTHY</span></td>
+                <td>Redis</td>
+                <td>独立测试环境</td>
+                <td>{{ status?.dependencies?.redis || '未检测' }}</td>
               </tr>
               <tr>
                 <td>MinIO 对象存储 (S3)</td>
-                <td><code>agentic-minio</code></td>
-                <td><strong>9010 (API) / 9011 (Console)</strong></td>
-                <td><span class="badge badge-success">HEALTHY</span></td>
+                <td>MinIO</td>
+                <td>私有对象存储</td>
+                <td>{{ status?.dependencies?.storage || '未检测' }}</td>
               </tr>
             </tbody>
           </table>
@@ -83,6 +83,13 @@
 </template>
 
 <script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import client from '@/api/client'
+const status = ref<any>(null)
+onMounted(async () => {
+  try { status.value = (await client.get('/system/status')).data.data }
+  catch { status.value = { dependencies: { postgres: '无法检测', redis: '无法检测', storage: '无法检测' } } }
+})
 </script>
 
 <style scoped>

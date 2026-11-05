@@ -9,6 +9,7 @@ from sqlalchemy import select, update
 from app.services.base import BaseService
 from app.models.asset import Asset
 from app.models.sku import Sku
+from app.models.task import Task
 
 logger = logging.getLogger("asset_service")
 
@@ -35,7 +36,7 @@ class AssetService(BaseService):
 
         result = []
         for a in items:
-            sku_res = await self.session.execute(select(Sku.name, Sku.code).where(Sku.id == a.sku_id))
+            sku_res = await self.session.execute(select(Sku.name, Sku.code).where(Sku.id == a.sku_id, Sku.tenant_id == tenant_id, Sku.is_deleted == 0))
             sku_info = sku_res.first()
             result.append({
                 "id": a.id, "task_id": a.task_id, "sku_id": a.sku_id,
@@ -52,6 +53,17 @@ class AssetService(BaseService):
         sku_id: str, type: str, url: str,
         task_id: str = "manual_upload", sub_type: str = "main", meta: dict = None,
     ) -> str:
+        sku = (await self.session.execute(select(Sku).where(
+            Sku.id == sku_id, Sku.tenant_id == tenant_id, Sku.is_deleted == 0,
+        ))).scalar_one_or_none()
+        if sku is None:
+            raise ValueError("目标商品 SKU 不存在")
+        if task_id not in {None, "manual", "manual_upload"}:
+            task = (await self.session.execute(select(Task).where(
+                Task.id == task_id, Task.sku_id == sku_id, Task.tenant_id == tenant_id, Task.is_deleted == 0,
+            ))).scalar_one_or_none()
+            if task is None:
+                raise ValueError("目标任务不存在或与商品不匹配")
         asset = Asset(
             tenant_id=tenant_id, sku_id=sku_id, task_id=task_id or "manual",
             type=type, sub_type=sub_type, url=url, meta=meta or {},

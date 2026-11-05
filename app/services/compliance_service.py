@@ -10,11 +10,12 @@ from app.services.base import BaseService
 from app.models.compliance import ComplianceReport
 from app.models.sku import Sku
 from app.clients.provider_factory import ProviderFactory
+from app.clients.provider_factory import ProviderCallError
+from app.core.compliance import parse_review, rule_violations
 
 logger = logging.getLogger("compliance_service")
 
 # 违禁词黑名单 — 生产环境可扩展为数据库/Redis 管理
-FORBIDDEN_WORDS = ["世界第一", "绝对有效", "100% cure", "best in the world", "cheapest"]
 
 
 class ComplianceService(BaseService):
@@ -36,7 +37,7 @@ class ComplianceService(BaseService):
 
         result = []
         for r in items:
-            sku_res = await self.session.execute(select(Sku.name, Sku.code).where(Sku.id == r.sku_id))
+            sku_res = await self.session.execute(select(Sku.name, Sku.code).where(Sku.id == r.sku_id, Sku.tenant_id == tenant_id, Sku.is_deleted == 0))
             sku_info = sku_res.first()
             result.append({
                 "id": r.id, "task_id": r.task_id, "sku_id": r.sku_id,
@@ -52,7 +53,7 @@ class ComplianceService(BaseService):
     async def get_report(self, tenant_id: str, report_id: str) -> dict:
         res = await self.session.execute(
             select(ComplianceReport).where(
-                ComplianceReport.id == report_id, ComplianceReport.tenant_id == tenant_id
+                ComplianceReport.id == report_id, ComplianceReport.tenant_id == tenant_id, ComplianceReport.is_deleted == 0
             )
         )
         r = res.scalar_one_or_none()
@@ -82,28 +83,27 @@ class ComplianceService(BaseService):
 """
         messages = [
             {"role": "system", "content": "你是一位拥有资深经验的跨境电商合规审核专家。"},
-            {"role": "human", "content": prompt},
+            {"role": "user", "content": prompt},
         ]
-        await llm_client.chat_completion(messages, model="qwen-plus")
-
-        # 2. 规则引擎检测
-        found_violations = []
-        text_to_check = f"{title} {content}".lower()
-        for w in FORBIDDEN_WORDS:
-            if w.lower() in text_to_check:
-                found_violations.append(f"发现敏感绝对化用词: {w}")
-
-        score = 98.0 if not found_violations else 70.0
-        passed = 1 if not found_violations else 0
+        found_violations = rule_violations(f"{title} {content}")
+        score, model_passed, dimensions = 0.0, 0, {}
+        suggestions = ["请重试审核或交由人工复核"]
+        try:
+            result = await llm_client.chat_completion(messages, model="qwen-plus")
+            review = parse_review(result.get("content", ""))
+            score, model_passed, dimensions = review.score, review.passed, review.dimensions
+            found_violations.extend(review.violations)
+            suggestions = review.suggestions
+            if result.get("is_mock"):
+                found_violations.append("模拟审核结果不可自动批准交付")
+        except (ValueError, TypeError, KeyError, IndexError, ProviderCallError):
+            found_violations.append("审核服务不可用或返回格式无效")
+        passed = int(model_passed == 1 and score >= 85 and not found_violations)
 
         return {
             "score": score,
             "passed": passed,
             "violations": found_violations,
-            "suggestions": ["文案整体严谨规范，适合直接上线。"] if passed else ["请移除上述敏感违禁词汇。"],
-            "dimensions": {
-                "brand_consistency": 95,
-                "platform_compliance": 96 if passed else 60,
-                "legal_safety": 95 if passed else 65,
-            },
+            "suggestions": suggestions,
+            "dimensions": dimensions,
         }

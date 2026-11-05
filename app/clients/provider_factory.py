@@ -17,6 +17,15 @@ from app.conf.config import settings
 
 logger = logging.getLogger("provider_factory")
 
+
+class ProviderCallError(RuntimeError):
+    """Sanitized provider failure; never include request credentials or response bodies."""
+
+
+def ensure_mock_allowed() -> None:
+    if settings.is_production or not settings.ALLOW_MOCK_ASSETS:
+        raise ProviderCallError("模型调用失败或未配置凭据；当前环境禁止模拟回退")
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. 通义千问 (Qwen) LLM & Embedding 客户端
 # ──────────────────────────────────────────────────────────────────────────────
@@ -50,7 +59,7 @@ class QwenLLMClient:
         }
         payload = {
             "model": model,
-            "messages": messages,
+            "messages": [{**m, "role": "user" if m["role"] == "human" else m["role"]} for m in messages],
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
@@ -79,23 +88,24 @@ class QwenLLMClient:
                         "is_mock": 0,
                     }
                 else:
-                    logger.warning(f"Qwen API 响应状态异常 ({resp.status_code}): {resp.text}，启用 Mock 回退")
+                    logger.warning("Qwen API failed (HTTP %s)", resp.status_code)
                     return self._mock_chat_completion(messages, model)
         except Exception as e:
-            logger.error(f"调用 Qwen 接口发生网络或协议异常: {str(e)}，自动回退 Mock")
+            logger.error("Qwen API failed (%s)", type(e).__name__)
             return self._mock_chat_completion(messages, model)
 
     async def get_embedding(self, text: str, model: str = "text-embedding-v4") -> List[float]:
         """获取文本 Embedding 向量 (使用 DashScope HTTP API)"""
         if not self.api_key or self.api_key.strip() == "":
             # 伪归一化向量 (1024 维)
+            ensure_mock_allowed()
             return [0.03125] * 1024
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        payload = {"model": model, "input": {"texts": [text]}}
+        payload = {"model": model, "input": {"texts": [text]}, "parameters": {"dimension": 1024}}
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
@@ -105,15 +115,21 @@ class QwenLLMClient:
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    return data["output"]["embeddings"][0]["embedding"]
+                    vector = data["output"]["embeddings"][0]["embedding"]
+                    import math
+                    if len(vector) != 1024 or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in vector):
+                        raise ProviderCallError("Invalid embedding dimension or value")
+                    return vector
                 else:
-                    logger.warning(f"Embedding API 响应异常: {resp.text}")
+                    logger.warning("Embedding API failed (HTTP %s)", resp.status_code)
         except Exception as e:
-            logger.warning(f"获取 Embedding 异常: {str(e)}，返回默认向量")
+            logger.warning("Embedding API failed (%s)", type(e).__name__)
+        ensure_mock_allowed()
         return [0.03125] * 1024
 
     def _mock_chat_completion(self, messages: List[Dict[str, str]], model: str) -> Dict[str, Any]:
         """针对电商多智能体业务构建的高拟真 Mock 文本"""
+        ensure_mock_allowed()
         last_msg = messages[-1]["content"] if messages else ""
         
         if "需求分析" in last_msg or "analyzer" in last_msg.lower():
@@ -160,9 +176,9 @@ class QwenLLMClient:
 
         return {
             "content": mock_text,
-            "prompt_tokens": 120,
-            "completion_tokens": 320,
-            "cost": 0.0035,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cost": 0.0,
             "elapsed_ms": 320,
             "model": f"{model}-mock",
             "is_mock": 1,
@@ -246,16 +262,17 @@ class WanxImageClient:
                             "model": model,
                         }
                     else:
-                        logger.warning(f"Qwen Image 响应中未找到图片 URL: {data}")
+                        logger.warning("Qwen Image returned no image URL")
                 else:
-                    logger.warning(f"Qwen Image 响应状态异常 ({resp.status_code}): {resp.text}")
+                    logger.warning("Qwen Image failed (HTTP %s)", resp.status_code)
         except Exception as e:
-            logger.error(f"Qwen Image 生图请求异常: {str(e)}，自动回退 Mock")
+            logger.error("Qwen Image failed (%s)", type(e).__name__)
 
         return self._mock_generate_images(prompt, n, size, model)
 
     def _mock_generate_images(self, prompt: str, n: int, size: str, model: str) -> Dict[str, Any]:
         """返回高质量电商商品图片链接与详细元数据"""
+        ensure_mock_allowed()
         selected_urls = []
         for i in range(n):
             url = self.DEMO_PRODUCT_IMAGES[i % len(self.DEMO_PRODUCT_IMAGES)]
@@ -357,15 +374,16 @@ class KlingVideoClient:
                                     "model": model,
                                 }
                             elif status in ["FAILED", "CANCELED"]:
-                                logger.warning(f"Wan 3.0 视频生成失败: {q_data}，切换 Mock")
+                                logger.warning("Video generation failed (%s)", status)
                                 break
         except Exception as e:
-            logger.error(f"Wan 3.0 视频调用发生异常: {str(e)}，自动回退 Mock")
+            logger.error("Video API failed (%s)", type(e).__name__)
 
         return self._mock_generate_video(prompt, duration, aspect_ratio, model)
 
     def _mock_generate_video(self, prompt: str, duration: int, aspect_ratio: str, model: str) -> Dict[str, Any]:
         """返回高质量演示视频链接与分镜元数据"""
+        ensure_mock_allowed()
         video_url = self.DEMO_PRODUCT_VIDEOS[0]
         return {
             "video_url": video_url,
