@@ -11,6 +11,7 @@ from app.clients.postgres import AsyncSessionLocal
 from app.clients.provider_factory import ProviderFactory
 from app.models.asset import Asset
 from app.prompt.templates import load_prompt_template
+from app.core.generation import require_visual_plan
 
 logger = logging.getLogger("image_generator_node")
 
@@ -19,7 +20,7 @@ async def image_generator_node(state: AgentState) -> dict:
     task_id = state.get("task_id")
     tenant_id = state.get("tenant_id") or "tenant_default"
     sku_id = state.get("sku_id") or ""
-    prompts = state.get("generation_prompts") or {}
+    prompts = require_visual_plan(state.get("generation_prompts") or {})
 
     logger.info(f"图片生成智能体启动: task_id={task_id}")
 
@@ -34,9 +35,9 @@ async def image_generator_node(state: AgentState) -> dict:
 
     # 1. 批量生成 3 种典型视角素材
     sub_types = [
-        ("main", prompts.get("main_image", "product on white background")),
-        ("scene", prompts.get("scene_image", "product in outdoor campsite")),
-        ("detail", prompts.get("detail_image", "product close up texture")),
+        ("main", prompts.main_image),
+        ("scene", prompts.scene_image),
+        ("detail", prompts.detail_image),
     ]
 
     for sub_type, prompt_str in sub_types:

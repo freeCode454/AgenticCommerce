@@ -11,6 +11,7 @@ from app.clients.postgres import AsyncSessionLocal
 from app.clients.provider_factory import ProviderFactory
 from app.models.asset import Asset
 from app.prompt.templates import load_prompt_template
+from app.core.generation import require_visual_plan
 
 logger = logging.getLogger("video_generator_node")
 
@@ -19,7 +20,7 @@ async def video_generator_node(state: AgentState) -> dict:
     task_id = state.get("task_id")
     tenant_id = state.get("tenant_id") or "tenant_default"
     sku_id = state.get("sku_id") or ""
-    prompts = state.get("generation_prompts") or {}
+    prompts = require_visual_plan(state.get("generation_prompts") or {})
     images = state.get("generated_images") or []
 
     logger.info(f"视频生成智能体启动: task_id={task_id}")
@@ -29,7 +30,7 @@ async def video_generator_node(state: AgentState) -> dict:
     if agent_prompt:
         logger.info(f"已加载视频智能体提示词模板 ({len(agent_prompt)} 字符)")
 
-    video_prompt = prompts.get("video_storyboard", "cinematic product demonstration video")
+    video_prompt = prompts.video_storyboard
     ref_image_url = images[0].get("url") if images else None
 
     video_client = ProviderFactory.get_video_client("kling")

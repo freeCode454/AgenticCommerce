@@ -88,6 +88,51 @@ async def test_disabled_tenant_cannot_reuse_issued_token(context):
     assert (await context["client"].get("/api/v1/auth/me")).status_code == 401
 
 
+@pytest.mark.parametrize("valid", [True, False])
+async def test_generated_copy_persists_validated_fields_with_tenant(context, monkeypatch, valid):
+    import json
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+    from sqlalchemy import select
+    from app.agent.nodes import creative_planner
+    from app.core.generation import GenerationOutputError
+
+    draft = {
+        "title": "Ceramic Mug for Daily Use",
+        "bullets": [f"Verified ceramic mug detail {i}" for i in range(1, 6)],
+        "description": "A ceramic mug described using the supplied product facts.",
+        "keywords": ["ceramic mug", "drinkware", "mug", "ceramic cup", "everyday cup"],
+    }
+    llm, recorder = AsyncMock(), AsyncMock()
+    llm.chat_completion.return_value = {"content": json.dumps(draft) if valid else "INVALID COPY", "is_mock": 0}
+
+    @asynccontextmanager
+    async def node_session():
+        yield context["session"]
+
+    monkeypatch.setattr(creative_planner, "AsyncSessionLocal", node_session)
+    monkeypatch.setattr(creative_planner.ProviderFactory, "get_llm_client", lambda *args: llm)
+    monkeypatch.setattr(creative_planner, "record_node_execution", recorder)
+    state = {"tenant_id": context["tenant_a"], "task_id": context["task"], "sku_id": context["sku_a"],
+             "sku_data": {"name": "Ceramic Mug", "category": "home", "specs": {"material": "ceramic"}}}
+    if valid:
+        await creative_planner.creative_planner_node(state)
+    else:
+        with pytest.raises(GenerationOutputError):
+            await creative_planner.creative_planner_node(state)
+    rows = (await context["session"].execute(select(Copy).where(
+        Copy.tenant_id == context["tenant_a"], Copy.task_id == context["task"], Copy.is_deleted == 0,
+    ))).scalars().all()
+    assert len(rows) == (1 if valid else 0)
+    if valid:
+        copy = rows[0]
+        assert copy.sku_id == context["sku_a"]
+        assert {key: getattr(copy, key) for key in draft} == draft
+        detail = await context["client"].get("/api/v1/tasks/" + context["task"])
+        assert detail.json()["data"]["copy"] == draft
+    assert recorder.call_args.kwargs["status"] == ("success" if valid else "failed")
+
+
 async def test_completed_task_without_review_cannot_export(context):
     response = await context["client"].post("/api/v1/packages/export",json={"task_id":context["task"]})
     assert response.status_code == 409
