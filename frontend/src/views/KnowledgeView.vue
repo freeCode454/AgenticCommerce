@@ -1,183 +1,292 @@
+<script setup lang="ts">
+import { reactive, ref } from 'vue'
+import client from '@/api/client'
+import { useCollection } from '@/composables/useCollection'
+import { useUiStore } from '@/stores/ui'
+import { dateText, errorMessage } from '@/utils/format'
+import type { ApiResponse, KnowledgeDoc, KnowledgeDetail } from '@/types'
+import PageHeading from '@/components/ui/PageHeading.vue'
+import PageState from '@/components/ui/PageState.vue'
+import PaginationBar from '@/components/ui/PaginationBar.vue'
+import AppDialog from '@/components/ui/AppDialog.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
+const ui = useUiStore(),
+  list = useCollection<KnowledgeDoc>('/knowledge/docs', 10, { category: '' }),
+  open = ref(false),
+  drawer = ref(false),
+  busy = ref(false),
+  failure = ref(''),
+  docLoading = ref(false),
+  docError = ref(''),
+  selected = ref<KnowledgeDetail | null>(null),
+  selectedId = ref('')
+const form = reactive({
+    category: 'brand',
+    doc_type: 'brand',
+    name: '',
+    content: '',
+  }),
+  query = ref(''),
+  searching = ref(false),
+  searched = ref(false),
+  searchError = ref(''),
+  results = ref<{ id: string; content: string; doc_type: string }[]>([])
+const categories: Record<string, string> = {
+  brand: '品牌规范',
+  compliance: '合规政策',
+  market: '市场洞察',
+}
+let sequence = 0
+function start() {
+  Object.assign(form, {
+    category: 'brand',
+    doc_type: 'brand',
+    name: '',
+    content: '',
+  })
+  failure.value = ''
+  open.value = true
+}
+async function submit() {
+  if (busy.value) return
+  busy.value = true
+  failure.value = ''
+  try {
+    await client.post('/knowledge/docs', {
+      ...form,
+      doc_type: form.category,
+      name: form.name.trim(),
+      content: form.content.trim(),
+    })
+    open.value = false
+    ui.notify('文档已录入，请以文档列表显示的索引状态为准。')
+    await list.reload(true)
+  } catch (e) {
+    failure.value = errorMessage(e)
+  } finally {
+    busy.value = false
+  }
+}
+async function view(id: string) {
+  const seq = ++sequence
+  selectedId.value = id
+  selected.value = null
+  drawer.value = true
+  docLoading.value = true
+  docError.value = ''
+  try {
+    const { data } = await client.get<ApiResponse<KnowledgeDetail>>(`/knowledge/docs/${id}`)
+    if (seq === sequence) selected.value = data.data
+  } catch (e) {
+    if (seq === sequence) docError.value = errorMessage(e)
+  } finally {
+    if (seq === sequence) docLoading.value = false
+  }
+}
+async function search() {
+  if (searching.value || !query.value.trim()) return
+  searching.value = true
+  searched.value = false
+  searchError.value = ''
+  results.value = []
+  try {
+    const { data } = await client.post<
+      ApiResponse<{
+        results: { id: string; content: string; doc_type: string }[]
+      }>
+    >('/knowledge/query', { query_text: query.value.trim(), top_k: 3 })
+    results.value = data.data.results
+    searched.value = true
+  } catch (e) {
+    searchError.value = errorMessage(e)
+  } finally {
+    searching.value = false
+  }
+}
+</script>
 <template>
-  <div class="knowledge-page">
-    <div class="page-title-row">
-      <div>
-        <h1 class="page-title">企业品牌与合规知识库 (RAG)</h1>
-        <p class="page-desc">基于 PostgreSQL 16 pgvector 1024 维向量引擎，支持品牌调性与海外广告法精准语义召回</p>
+  <PageHeading
+    title="品牌知识库"
+    description="沉淀品牌规范、合规政策和市场洞察，为创作提供依据。"
+    eyebrow="BRAND KNOWLEDGE"
+  >
+    <button class="btn btn-primary" @click="start">
+      <AppIcon name="plus" :size="17" />
+      录入知识文档
+    </button>
+  </PageHeading>
+  <div class="knowledge-layout">
+    <section class="stack">
+      <div class="toolbar">
+        <div class="filter-group">
+          <label for="doc-category">文档分类</label>
+          <select
+            id="doc-category"
+            v-model="list.params.category"
+            class="form-select"
+            @change="list.reload(true)"
+          >
+            <option value="">全部分类</option>
+            <option v-for="(name, key) in categories" :key="key" :value="key">
+              {{ name }}
+            </option>
+          </select>
+        </div>
+        <button
+          class="icon-button"
+          aria-label="刷新文档"
+          :disabled="list.loading"
+          @click="list.reload()"
+        >
+          <AppIcon name="refresh" :size="18" />
+        </button>
       </div>
-      <div class="actions">
-        <button class="btn btn-primary" @click="showModal = true">+ 录入品牌知识文档</button>
-      </div>
-    </div>
-
-    <!-- 知识库与向量召回测试分栏 -->
-    <div class="knowledge-grid">
-      <!-- 左列：文档列表 -->
-      <div class="card docs-card">
-        <h3 class="card-title mb-3">知识库文档清单</h3>
-        <div class="table-container">
+      <PageState
+        :loading="list.loading"
+        :error="list.error"
+        :error-code="list.errorCode"
+        :empty="!list.items.length"
+        title="知识库等待第一份积累"
+        description="粘贴文档正文，建立品牌专属的创作依据。"
+        icon="book"
+        @retry="list.reload()"
+      >
+        <div class="panel table-wrap">
           <table class="data-table">
             <thead>
               <tr>
-                <th>分类</th>
                 <th>文档名称</th>
-                <th>向量化状态</th>
-                <th>创建时间</th>
+                <th>分类</th>
+                <th>索引状态</th>
+                <th>录入时间</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="d in docs" :key="d.id">
-                <td><span class="badge badge-info">{{ d.category }}</span></td>
-                <td><strong>{{ d.name }}</strong></td>
-                <td><span class="badge badge-success">{{ d.vector_status }}</span></td>
-                <td>{{ d.create_time ? new Date(d.create_time).toLocaleDateString() : '-' }}</td>
-              </tr>
-              <tr v-if="docs.length === 0">
-                <td colspan="4" class="text-center text-muted p-4">暂无知识库文档</td>
+              <tr v-for="doc in list.items" :key="doc.id">
+                <td>
+                  <button class="table-title" @click="view(doc.id)">
+                    {{ doc.name }}
+                  </button>
+                  <small>{{ doc.id }}</small>
+                </td>
+                <td>{{ categories[doc.category] || doc.category }}</td>
+                <td><StatusBadge :status="doc.vector_status" /></td>
+                <td>{{ dateText(doc.create_time) }}</td>
               </tr>
             </tbody>
           </table>
         </div>
-      </div>
-
-      <!-- 右列：RAG 向量相似度检索测试器 -->
-      <div class="card rag-tester-card">
-        <h3 class="card-title mb-2">⚡ pgvector 向量检索调试器</h3>
-        <p class="text-sm text-muted mb-3">模拟 RequirementAnalyzer 智能体在策划前检索相关品牌与风控条例</p>
-        <div class="form-group">
-          <label class="form-label">检索输入 Prompt / 意图</label>
-          <input type="text" v-model="queryText" class="form-input" placeholder="例如: 品牌对于违规词与调性的要求" />
-        </div>
-        <button class="btn btn-primary btn-sm" @click="testRecall" :disabled="recalling">
-          {{ recalling ? '向量计算中...' : '🔍 执行余弦相似度召回' }}
+      </PageState>
+      <PaginationBar
+        :page="list.page"
+        @change="list.page = $event"
+        :total="list.total"
+        :size="list.size"
+        :loading="list.loading"
+        :has-more="list.hasMore"
+      />
+    </section>
+    <aside class="card knowledge-search">
+      <span class="empty-icon"><AppIcon name="search" :size="24" /></span>
+      <h2 class="content-title mt-4">寻找品牌的答案</h2>
+      <p class="text-muted mt-2">输入一个问题，检索相关知识片段。</p>
+      <form class="form-stack mt-5" @submit.prevent="search">
+        <label class="sr-only" for="knowledge-query">知识检索问题</label>
+        <textarea
+          id="knowledge-query"
+          v-model="query"
+          class="form-textarea"
+          placeholder="输入需要查找的品牌规范或政策"
+          rows="4"
+          required
+          :disabled="searching"
+        />
+        <p class="field-hint">主动检索会调用向量模型，可能产生费用。</p>
+        <button class="btn btn-primary btn-full" :disabled="searching || !query.trim()">
+          <AppIcon name="search" :size="16" />
+          {{ searching ? '正在检索…' : '开始检索' }}
         </button>
-
-        <div v-if="recallResults.length" class="recall-box mt-3">
-          <div class="recall-title">Top-K 语义召回分块 (pgvector):</div>
-          <div v-for="(r, i) in recallResults" :key="i" class="recall-item mt-2">
-            <span class="badge badge-info mb-1">{{ r.doc_type }}</span>
-            <p class="text-sm">{{ r.content }}</p>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 新建文档弹窗 -->
-    <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
-      <div class="modal-content">
-        <h3 class="modal-title mb-4">录入新品牌/风控知识文档</h3>
-        <div class="form-group">
-          <label class="form-label">文档分类</label>
-          <select v-model="form.category" class="form-select">
-            <option value="brand">brand (品牌调性与主张)</option>
-            <option value="compliance">compliance (合规政策与禁忌)</option>
-            <option value="market">market (海外目标市场消费画像)</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">文档名称</label>
-          <input type="text" v-model="form.name" class="form-input" placeholder="例如: 2026北美露营装备客群偏好规范" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">知识正文内容 (系统自动进行 1024 维切片向量化)</label>
-          <textarea v-model="form.content" class="form-textarea" rows="4" placeholder="粘贴正文段落..."></textarea>
-        </div>
-        <div class="modal-footer mt-4">
-          <button class="btn btn-secondary" @click="showModal = false">取消</button>
-          <button class="btn btn-primary" @click="submitDoc">提交并构建向量索引</button>
-        </div>
-      </div>
-    </div>
+      </form>
+      <p v-if="searchError" class="notice notice-error mt-4" role="alert">
+        {{ searchError }}
+      </p>
+      <p v-if="searched && !results.length" class="notice mt-4">未检索到相关知识片段。</p>
+      <article v-for="(result, i) in results" :key="result.id" class="recall-result">
+        <span class="badge badge-neutral">
+          片段 {{ i + 1 }} · {{ categories[result.doc_type] || result.doc_type }}
+        </span>
+        <p class="prose mt-3">{{ result.content }}</p>
+      </article>
+    </aside>
   </div>
+  <AppDialog v-model="open" title="录入知识文档" :busy="busy">
+    <form id="knowledge-create" class="form-stack" @submit.prevent="submit">
+      <p class="notice notice-warning">
+        提交将调用向量模型保存索引，可能产生费用。当前支持粘贴正文录入。
+      </p>
+      <p v-if="failure" class="notice notice-error" role="alert">
+        {{ failure }}
+      </p>
+      <div class="form-group">
+        <label for="knowledge-category">文档分类</label>
+        <select
+          id="knowledge-category"
+          v-model="form.category"
+          class="form-select"
+          :disabled="busy"
+        >
+          <option v-for="(name, key) in categories" :key="key" :value="key">
+            {{ name }}
+          </option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="knowledge-name">文档名称</label>
+        <input
+          id="knowledge-name"
+          v-model="form.name"
+          class="form-input"
+          maxlength="256"
+          required
+          :disabled="busy"
+        />
+      </div>
+      <div class="form-group">
+        <label for="knowledge-content">正文内容</label>
+        <textarea
+          id="knowledge-content"
+          v-model="form.content"
+          class="form-textarea"
+          rows="9"
+          required
+          :disabled="busy"
+        />
+      </div>
+    </form>
+    <template #footer>
+      <button class="btn btn-secondary" :disabled="busy" @click="open = false">取消</button>
+      <button type="submit" form="knowledge-create" class="btn btn-primary" :disabled="busy">
+        {{ busy ? '正在建立索引…' : '录入并向量化' }}
+      </button>
+    </template>
+  </AppDialog>
+  <AppDialog v-model="drawer" title="知识文档详情" drawer>
+    <PageState :loading="docLoading" :error="docError" @retry="view(selectedId)">
+      <template v-if="selected">
+        <h2 class="content-title">{{ selected.name }}</h2>
+        <div class="row wrap mt-3">
+          <span class="badge badge-neutral">
+            {{ categories[selected.category] || selected.category }}
+          </span>
+          <StatusBadge :status="selected.vector_status" />
+        </div>
+        <article v-for="chunk in selected.chunks" :key="chunk.id" class="mt-5">
+          <p class="text-muted text-sm">文档片段 {{ chunk.index }}</p>
+          <p class="prose mt-3">{{ chunk.content }}</p>
+        </article>
+        <p v-if="!selected.chunks.length" class="notice mt-5">该文档暂无正文片段。</p>
+      </template>
+    </PageState>
+  </AppDialog>
 </template>
-
-<script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import client from '@/api/client'
-
-const docs = ref<any[]>([])
-const showModal = ref(false)
-const queryText = ref('品牌调性与绝对化用词禁忌')
-const recalling = ref(false)
-const recallResults = ref<any[]>([])
-
-const form = ref({
-  category: 'brand',
-  doc_type: 'brand_guideline',
-  name: '',
-  content: ''
-})
-
-async function loadDocs() {
-  try {
-    const res = await client.get('/knowledge/docs')
-    docs.value = res.data?.data?.items || []
-  } catch (e) {
-    console.error(e)
-  }
-}
-
-async function submitDoc() {
-  if (!form.value.name || !form.value.content) return
-  try {
-    await client.post('/knowledge/docs', form.value)
-    showModal.value = false
-    alert('文档录入成功，已完成 1024 维向量切片与索引！')
-    loadDocs()
-  } catch (e) {
-    alert('录入失败')
-  }
-}
-
-async function testRecall() {
-  if (!queryText.value) return
-  recalling.value = true
-  try {
-    const res = await client.post('/knowledge/query', {
-      query_text: queryText.value,
-      top_k: 2
-    })
-    recallResults.value = res.data?.data?.results || []
-  } catch (e) {
-    alert('检索异常')
-  } finally {
-    recalling.value = false
-  }
-}
-
-onMounted(() => {
-  loadDocs()
-})
-</script>
-
-<style scoped>
-.page-title-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 24px;
-}
-.page-title { font-size: 22px; font-weight: 700; }
-.page-desc { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
-
-.knowledge-grid {
-  display: grid;
-  grid-template-columns: 1.2fr 1fr;
-  gap: 20px;
-}
-
-.recall-box {
-  background: #f8fafc;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px;
-}
-.recall-title { font-size: 13px; font-weight: 600; color: #1e293b; }
-.recall-item {
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px;
-}
-.modal-footer { display: flex; justify-content: flex-end; gap: 12px; }
-</style>

@@ -1,182 +1,189 @@
-<template>
-  <div class="compliance-page">
-    <div class="page-title-row">
-      <div>
-        <h1 class="page-title">合规风控与质检中心</h1>
-        <p class="page-desc">实时管控商标侵权、平台违禁词与广告法绝对化夸大宣称</p>
-      </div>
-    </div>
-
-    <!-- 在线实时合规筛查工具卡片 -->
-    <div class="card live-checker-card mb-4">
-      <h3 class="card-title mb-2">⚡ 在线出海文案合规即时筛查</h3>
-      <p class="text-sm text-muted mb-3">输入待审核商品标题或文案，一键调用合规大模型与关键词库进行智能风控体检</p>
-      <div class="checker-form">
-        <div class="form-group">
-          <label class="form-label">标题 (Title)</label>
-          <input type="text" v-model="checkTitle" class="form-input" placeholder="输入待测标题" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">文案内容 (Content / Bullets)</label>
-          <textarea v-model="checkContent" class="form-textarea" rows="3" placeholder="输入待测描述内容"></textarea>
-        </div>
-        <div class="checker-actions">
-          <button class="btn btn-primary" @click="runLiveCheck" :disabled="checking">
-            {{ checking ? '智能筛查中...' : '🔍 立即合规检测' }}
-          </button>
-        </div>
-      </div>
-
-      <!-- 检测结果展示 -->
-      <div v-if="checkResult" class="check-result-box mt-3">
-        <div class="result-header">
-          <div class="result-score">
-            得分: <strong>{{ checkResult.score }}</strong> 分
-          </div>
-          <span :class="['badge', checkResult.passed ? 'badge-success' : 'badge-danger']">
-            {{ checkResult.passed ? '合规通过' : '存在违规风险' }}
-          </span>
-        </div>
-        <div v-if="checkResult.violations?.length" class="violations-list mt-2">
-          <div v-for="(v, i) in checkResult.violations" :key="i" class="violation-item">
-            ⚠️ {{ v }}
-          </div>
-        </div>
-        <div class="suggestions-list mt-2">
-          <span class="text-muted text-xs">优化建议:</span>
-          <ul>
-            <li v-for="(s, i) in checkResult.suggestions" :key="i" class="text-sm">{{ s }}</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-
-    <!-- 历史生成任务质检报告流水 -->
-    <div class="card">
-      <div class="card-header">
-        <h3 class="card-title">历史任务质检评估流水</h3>
-      </div>
-      <div class="table-container mt-3">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>报告 ID</th>
-              <th>关联任务</th>
-              <th>商品 SKU</th>
-              <th>综合得分</th>
-              <th>审核结果</th>
-              <th>各维度明细</th>
-              <th>生成时间</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="r in reports" :key="r.id">
-              <td><code class="code-pill">{{ r.id }}</code></td>
-              <td>{{ r.task_id }}</td>
-              <td><strong>{{ r.sku_name }}</strong></td>
-              <td><strong class="score-text">{{ r.score }} 分</strong></td>
-              <td>
-                <span :class="['badge', r.passed ? 'badge-success' : 'badge-danger']">
-                  {{ r.passed ? 'PASSED' : 'RETRY' }}
-                </span>
-              </td>
-              <td>
-                <div class="dims-inline">
-                  <span v-for="(v, k) in r.dimensions" :key="k" class="dim-pill">
-                    {{ k }}: {{ v }}
-                  </span>
-                </div>
-              </td>
-              <td>{{ r.create_time ? new Date(r.create_time).toLocaleString() : '-' }}</td>
-            </tr>
-            <tr v-if="reports.length === 0">
-              <td colspan="7" class="text-center text-muted p-4">暂无审核报告</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref } from 'vue'
 import client from '@/api/client'
-
-const reports = ref<any[]>([])
-const checkTitle = ref('超轻折叠椅 - 顶级品质')
-const checkContent = ref('采用世界第一的航天铝合金材料，绝对100%安全，户外露营必备。')
-const checking = ref(false)
-const checkResult = ref<any>(null)
-
-async function loadReports() {
+import { useCollection } from '@/composables/useCollection'
+import { dateText, errorMessage } from '@/utils/format'
+import type { ApiResponse, Report } from '@/types'
+import PageHeading from '@/components/ui/PageHeading.vue'
+import PageState from '@/components/ui/PageState.vue'
+import PaginationBar from '@/components/ui/PaginationBar.vue'
+import AppDialog from '@/components/ui/AppDialog.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
+import ReviewResult from '@/components/ui/ReviewResult.vue'
+const list = useCollection<Report>('/compliance/reports', 12),
+  open = ref(false),
+  checking = ref(false),
+  busy = ref(false),
+  loading = ref(false),
+  failure = ref(''),
+  selected = ref<Report | null>(null),
+  title = ref(''),
+  content = ref('')
+let request = 0
+async function view(report: Report) {
+  if (!report.id) return
+  const seq = ++request
+  selected.value = report
+  open.value = true
+  loading.value = true
+  failure.value = ''
   try {
-    const res = await client.get('/compliance/reports?page=1&page_size=20')
-    reports.value = res.data?.data?.items || []
+    const { data } = await client.get<ApiResponse<Report>>(`/compliance/reports/${report.id}`)
+    if (seq === request) selected.value = data.data
   } catch (e) {
-    console.error(e)
-  }
-}
-
-async function runLiveCheck() {
-  if (!checkTitle.value && !checkContent.value) return
-  checking.value = true
-  try {
-    const res = await client.post('/compliance/check', {
-      title: checkTitle.value,
-      content: checkContent.value,
-      target_platform: 'amazon'
-    })
-    checkResult.value = res.data?.data
-  } catch (e) {
-    alert('检测失败')
+    if (seq === request) failure.value = errorMessage(e)
   } finally {
-    checking.value = false
+    if (seq === request) loading.value = false
   }
 }
-
-onMounted(() => {
-  loadReports()
-})
+function start() {
+  title.value = ''
+  content.value = ''
+  failure.value = ''
+  checking.value = true
+}
+async function check() {
+  if (busy.value) return
+  busy.value = true
+  failure.value = ''
+  try {
+    const { data } = await client.post<ApiResponse<Report>>('/compliance/check', {
+      title: title.value.trim(),
+      content: content.value.trim(),
+      target_platform: 'amazon',
+    })
+    selected.value = data.data
+    checking.value = false
+    open.value = true
+    await list.reload(true)
+  } catch (e) {
+    failure.value = errorMessage(e)
+  } finally {
+    busy.value = false
+  }
+}
 </script>
-
-<style scoped>
-.page-title-row { margin-bottom: 24px; }
-.page-title { font-size: 22px; font-weight: 700; }
-.page-desc { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
-
-.live-checker-card {
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  border: 1px solid #c7d2fe;
-}
-.check-result-box {
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 14px 18px;
-}
-.result-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.result-score { font-size: 16px; color: #1e293b; }
-.violation-item {
-  color: #dc2626;
-  font-size: 12.5px;
-  background: #fee2e2;
-  padding: 4px 10px;
-  border-radius: 4px;
-  margin-top: 4px;
-}
-
-.dims-inline { display: flex; gap: 6px; flex-wrap: wrap; }
-.dim-pill {
-  background: #f1f5f9;
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 11px;
-}
-.score-text { color: #047857; font-size: 14px; }
-.code-pill { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
-</style>
+<template>
+  <PageHeading
+    title="审核中心"
+    description="把好内容发布前的每一道关，查看质量与合规建议。"
+    eyebrow="QUALITY & COMPLIANCE"
+  >
+    <button class="btn btn-primary" @click="start">
+      <AppIcon name="shield" :size="17" />
+      检查一段文案
+    </button>
+  </PageHeading>
+  <div class="notice mb-5">
+    <AppIcon name="info" :size="17" />
+    <span>审核报告为模型辅助建议。编辑文案后，旧报告会标记失效，需要重新审核。</span>
+  </div>
+  <PageState
+    :loading="list.loading"
+    :error="list.error"
+    :error-code="list.errorCode"
+    :empty="!list.items.length"
+    title="暂无审核报告"
+    description="生成任务完成审核，或主动检查文案后，可在此查看结果。"
+    icon="shield"
+    @retry="list.reload()"
+  >
+    <div class="panel table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>商品 / 任务</th>
+            <th>综合评分</th>
+            <th>审核结果</th>
+            <th>审核时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="report in list.items" :key="report.id">
+            <td>
+              <strong>{{ report.sku_name || report.sku_code || '独立文案检查' }}</strong>
+              <small>{{ report.task_id || report.id }}</small>
+            </td>
+            <td>
+              <span class="score-value">{{ report.score }}</span>
+              <span class="text-muted text-sm">/ 100</span>
+            </td>
+            <td>
+              <StatusBadge
+                :status="
+                  report.status === 'outdated' ? 'outdated' : report.passed ? 'passed' : 'rejected'
+                "
+              />
+            </td>
+            <td>{{ dateText(report.create_time) }}</td>
+            <td>
+              <button class="text-button" @click="view(report)">
+                查看详情
+                <AppIcon name="arrow-right" :size="14" />
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </PageState>
+  <PaginationBar
+    :page="list.page"
+    @change="list.page = $event"
+    :total="list.total"
+    :size="list.size"
+    :loading="list.loading"
+    :has-more="list.hasMore"
+  />
+  <AppDialog v-model="open" title="审核详情" drawer>
+    <PageState :loading="loading" :error="failure" @retry="selected && view(selected)">
+      <ReviewResult v-if="selected" :report="selected" />
+      <RouterLink
+        v-if="selected?.task_id"
+        class="btn btn-secondary mt-5"
+        :to="`/workbench/${selected.task_id}`"
+        @click="open = false"
+      >
+        打开关联工作台
+      </RouterLink>
+    </PageState>
+  </AppDialog>
+  <AppDialog
+    v-model="checking"
+    title="检查文案"
+    description="使用当前服务端模型进行质量与合规检查。"
+    :busy="busy"
+  >
+    <form id="compliance-check" class="form-stack" @submit.prevent="check">
+      <p class="notice notice-warning">
+        点击“开始检查”会调用 AI 模型，可能产生费用。当前目标平台为 Amazon。
+      </p>
+      <p v-if="failure" class="notice notice-error" role="alert">
+        {{ failure }}
+      </p>
+      <div class="form-group">
+        <label for="review-title">商品标题</label>
+        <input id="review-title" v-model="title" class="form-input" required :disabled="busy" />
+      </div>
+      <div class="form-group">
+        <label for="review-content">待审核文案</label>
+        <textarea
+          id="review-content"
+          v-model="content"
+          class="form-textarea"
+          rows="8"
+          required
+          :disabled="busy"
+        />
+      </div>
+    </form>
+    <template #footer>
+      <button class="btn btn-secondary" :disabled="busy" @click="checking = false">取消</button>
+      <button class="btn btn-primary" type="submit" form="compliance-check" :disabled="busy">
+        {{ busy ? '正在检查…' : '开始检查（可能产生费用）' }}
+      </button>
+    </template>
+  </AppDialog>
+</template>

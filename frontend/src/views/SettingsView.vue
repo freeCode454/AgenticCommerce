@@ -1,117 +1,141 @@
+<script setup lang="ts">
+import { useResource } from '@/composables/useResource'
+import { useUserStore } from '@/stores/user'
+import type { SystemStatus } from '@/types'
+import PageHeading from '@/components/ui/PageHeading.vue'
+import PageState from '@/components/ui/PageState.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import BrandLogo from '@/components/ui/BrandLogo.vue'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
+const user = useUserStore(),
+  { data, loading, error, errorCode, reload } = useResource<SystemStatus>('/system/status')
+const services = [
+  {
+    key: 'postgres',
+    name: '业务数据库',
+    icon: 'database',
+    description: '保存商品、任务与内容记录。',
+  },
+  {
+    key: 'redis',
+    name: '任务与缓存',
+    icon: 'layers',
+    description: '支持任务执行与实时状态通信。',
+  },
+  {
+    key: 'storage',
+    name: '媒体存储',
+    icon: 'image',
+    description: '保存生成的图片与视频文件。',
+  },
+]
+</script>
 <template>
-  <div class="settings-page">
-    <div class="page-title-row">
-      <div>
-        <h1 class="page-title">系统与多租户设置</h1>
-        <p class="page-desc">平台基础设施隔离运行参数、审计规范与租户配置</p>
-      </div>
-    </div>
-
-    <div class="settings-grid">
-      <!-- 租户信息 -->
-      <div class="card mb-4">
-        <h3 class="card-title mb-3">🏢 当前企业租户信息</h3>
-        <div class="info-list">
-          <div class="info-item">
-            <span class="info-k">租户 ID:</span>
-            <code class="info-v">{{ status?.tenant_id || '加载中' }}</code>
-          </div>
-          <div class="info-item">
-            <span class="info-k">企业全称:</span>
-            <span class="info-v">{{ status?.tenant_name || '加载中' }}</span>
-          </div>
-          <div class="info-item">
-            <span class="info-k">服务等级 (Plan):</span>
-            <span class="info-v">以当前租户实际授权为准</span>
-          </div>
-          <div class="info-item">
-            <span class="info-k">多租户隔离规范:</span>
-            <span class="info-v">全表强制挂载 tenant_id 物理逻辑字段，向量空间隔离</span>
-          </div>
+  <PageHeading
+    title="工作空间设置"
+    description="查看当前身份、服务状态与品牌资源。"
+    eyebrow="WORKSPACE SETTINGS"
+  >
+    <button class="btn btn-secondary" :disabled="loading" @click="reload()">
+      <AppIcon name="refresh" :size="16" />
+      检查服务状态
+    </button>
+  </PageHeading>
+  <div class="two-grid mb-5">
+    <section class="card">
+      <h2 class="content-title mb-4">当前工作空间</h2>
+      <dl class="details-list">
+        <div>
+          <dt>工作空间名称</dt>
+          <dd>
+            {{ data?.tenant_name || user.userInfo?.tenant_name || '暂不可用' }}
+          </dd>
         </div>
-      </div>
-
-      <!-- 独立 Docker 端口隔离配置 -->
-      <div class="card mb-4">
-        <h3 class="card-title mb-3">🐳 宿主机 Docker 端口隔离状态</h3>
-        <p class="text-sm text-muted mb-3">
-          为防止与宿主机现有业务容器发生冲突，本项目使用专属隔离命名空间与非冲突端口：
-        </p>
-        <div class="ports-table table-container">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>服务组件</th>
-                <th>容器命名</th>
-                <th>隔离绑定端口</th>
-                <th>状态</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>PostgreSQL 16 + pgvector</td>
-                <td>PostgreSQL</td>
-                <td>独立测试环境</td>
-                <td>{{ status?.dependencies?.postgres || '未检测' }}</td>
-              </tr>
-              <tr>
-                <td>Redis 7 缓存与信号量</td>
-                <td>Redis</td>
-                <td>独立测试环境</td>
-                <td>{{ status?.dependencies?.redis || '未检测' }}</td>
-              </tr>
-              <tr>
-                <td>MinIO 对象存储 (S3)</td>
-                <td>MinIO</td>
-                <td>私有对象存储</td>
-                <td>{{ status?.dependencies?.storage || '未检测' }}</td>
-              </tr>
-            </tbody>
-          </table>
+        <div>
+          <dt>工作空间 ID</dt>
+          <dd>
+            {{ data?.tenant_id || user.userInfo?.tenant_id || '暂不可用' }}
+          </dd>
         </div>
-      </div>
-
-      <!-- 执行审计规范 -->
-      <div class="card">
-        <h3 class="card-title mb-2">📜 执行日志归档规范 (Execution Logger)</h3>
-        <p class="text-sm text-muted">
-          严格按照规范执行：所有大模型集成、工作流流转与系统操作均在项目根目录 <code>ailog/</code> 中以 <code>YYYY-MM-DD_HH-mm-ss_任务主题.md</code> 完整备份，100% 具备历史追溯与 Mermaid 架构图还原能力。
-        </p>
-      </div>
+      </dl>
+      <p class="field-hint mt-4">所有内容与用量均以当前工作空间为范围。</p>
+    </section>
+    <section class="card">
+      <h2 class="content-title mb-4">我的账号</h2>
+      <dl class="details-list">
+        <div>
+          <dt>姓名</dt>
+          <dd>{{ user.userInfo?.name || '暂不可用' }}</dd>
+        </div>
+        <div>
+          <dt>邮箱</dt>
+          <dd>{{ user.userInfo?.email || '暂不可用' }}</dd>
+        </div>
+        <div>
+          <dt>角色</dt>
+          <dd>
+            {{ user.userInfo?.role === 'admin' ? '管理员' : user.userInfo?.role || '暂不可用' }}
+          </dd>
+        </div>
+      </dl>
+    </section>
+  </div>
+  <div class="section-heading">
+    <div>
+      <h2>服务状态</h2>
+      <p>显示服务端最近一次实际检查结果。</p>
     </div>
   </div>
+  <PageState :loading="loading" :error="error" :error-code="errorCode" @retry="reload()">
+    <div class="service-grid mb-5">
+      <article v-for="service in services" :key="service.key" class="service-card">
+        <AppIcon :name="service.icon" :size="24" />
+        <h3>{{ service.name }}</h3>
+        <StatusBadge
+          :status="data?.dependencies[service.key] || 'unknown'"
+          :label="data?.dependencies[service.key] ? '' : '未提供状态'"
+        />
+        <p>{{ service.description }}</p>
+      </article>
+    </div>
+  </PageState>
+  <section class="card mt-5">
+    <div class="settings-brand">
+      <div>
+        <h2 class="content-title">品牌资源</h2>
+        <BrandLogo />
+        <p class="text-muted text-sm">统一用于登录页、导航与项目资料。</p>
+      </div>
+      <div class="asset-links">
+        <a
+          class="btn btn-secondary btn-sm"
+          href="/brand/logo-mark.svg"
+          download="AgenticCommerce-mark.svg"
+        >
+          SVG 图形
+        </a>
+        <a
+          class="btn btn-secondary btn-sm"
+          href="/brand/logo-wordmark.svg"
+          download="AgenticCommerce-wordmark.svg"
+        >
+          SVG 字标
+        </a>
+        <a
+          class="btn btn-secondary btn-sm"
+          href="/brand/logo-512.png"
+          download="AgenticCommerce-512.png"
+        >
+          PNG 512px
+        </a>
+        <a
+          class="btn btn-secondary btn-sm"
+          href="/brand/logo-1024.png"
+          download="AgenticCommerce-1024.png"
+        >
+          PNG 1024px
+        </a>
+      </div>
+    </div>
+  </section>
 </template>
-
-<script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import client from '@/api/client'
-const status = ref<any>(null)
-onMounted(async () => {
-  try { status.value = (await client.get('/system/status')).data.data }
-  catch { status.value = { dependencies: { postgres: '无法检测', redis: '无法检测', storage: '无法检测' } } }
-})
-</script>
-
-<style scoped>
-.page-title-row { margin-bottom: 24px; }
-.page-title { font-size: 22px; font-weight: 700; }
-.page-desc { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
-
-.info-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.info-item {
-  display: flex;
-  justify-content: space-between;
-  font-size: 13.5px;
-  padding: 8px 12px;
-  background: #f8fafc;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-}
-.info-k { color: var(--text-muted); }
-.info-v { font-weight: 500; }
-.mb-4 { margin-bottom: 20px; }
-</style>

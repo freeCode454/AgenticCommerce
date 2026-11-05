@@ -1,318 +1,246 @@
+<script setup lang="ts">
+import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useUserStore } from '@/stores/user'
+import { navigation } from '@/config/navigation'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import BrandLogo from '@/components/ui/BrandLogo.vue'
+import AppDialog from '@/components/ui/AppDialog.vue'
+import UiHost from '@/components/ui/UiHost.vue'
+const route = useRoute(),
+  router = useRouter(),
+  user = useUserStore()
+const isLogin = computed(() => route.path === '/login')
+const mobileOpen = ref(false),
+  searchOpen = ref(false),
+  query = ref(''),
+  selected = ref(0)
+const compact = ref(window.innerWidth < 1024),
+  sidebar = ref<HTMLElement>()
+let priorFocus: HTMLElement | null = null
+function resize() {
+  compact.value = window.innerWidth < 1024
+  if (!compact.value) mobileOpen.value = false
+}
+const links = computed(() =>
+  navigation.filter((item) => !item.admin || user.userInfo?.role === 'admin'),
+)
+const groups = computed(() =>
+  ['工作空间', '内容资产', '品牌与管理'].map((title) => ({
+    title,
+    items: links.value.filter((item) => item.group === title),
+  })),
+)
+const results = computed(() =>
+  links.value.filter((item) => item.title.toLowerCase().includes(query.value.trim().toLowerCase())),
+)
+const initial = computed(() => user.userInfo?.name?.slice(0, 1) || 'A')
+function logout() {
+  user.clearToken()
+  void router.replace('/login')
+}
+function openSearch() {
+  query.value = ''
+  selected.value = 0
+  searchOpen.value = true
+}
+function navigate(index: number) {
+  const item = results.value[index]
+  if (item) {
+    searchOpen.value = false
+    void router.push(item.path)
+  }
+}
+function keydown(event: KeyboardEvent) {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && !isLogin.value) {
+    event.preventDefault()
+    mobileOpen.value = false
+    searchOpen.value ? (searchOpen.value = false) : openSearch()
+  }
+  if (event.key === 'Escape') mobileOpen.value = false
+  if (event.key === 'Tab' && mobileOpen.value) {
+    const targets = Array.from(
+      sidebar.value?.querySelectorAll<HTMLElement>('a,button:not(:disabled)') || [],
+    )
+    const first = targets[0],
+      last = targets[targets.length - 1]
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last?.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first?.focus()
+    }
+  }
+}
+function moveSearch(delta: number) {
+  if (results.value.length)
+    selected.value = (selected.value + delta + results.value.length) % results.value.length
+}
+watch(query, () => (selected.value = 0))
+watch(
+  () => route.fullPath,
+  () => {
+    mobileOpen.value = false
+    searchOpen.value = false
+  },
+)
+watch(mobileOpen, async (value) => {
+  document.body.classList.toggle('navigation-open', value)
+  if (value) {
+    priorFocus = document.activeElement as HTMLElement
+    await nextTick()
+    sidebar.value?.querySelector<HTMLElement>('a')?.focus()
+  } else {
+    await nextTick()
+    if (priorFocus?.isConnected) priorFocus.focus()
+  }
+})
+onMounted(() => {
+  window.addEventListener('keydown', keydown)
+  window.addEventListener('resize', resize)
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', keydown)
+  window.removeEventListener('resize', resize)
+  document.body.classList.remove('navigation-open')
+})
+</script>
 <template>
-  <div v-if="isLoginPage" class="login-layout">
-    <router-view />
-  </div>
+  <RouterView v-if="isLogin" />
   <div v-else class="app-layout">
-    <!-- 左侧极客质感暗色导航侧边栏 -->
-    <aside class="sidebar">
-      <div class="sidebar-header">
-        <div class="logo-box">
-          <span class="logo-icon">⚡</span>
-          <div class="logo-text">
-            <h2>AgenticCommerce</h2>
-            <span class="logo-sub">自主智能体出海电商</span>
-          </div>
+    <a class="skip-link" href="#main-content">跳转到页面内容</a>
+    <button
+      v-if="mobileOpen"
+      class="sidebar-overlay"
+      aria-label="关闭导航"
+      @click="mobileOpen = false"
+    />
+    <aside
+      ref="sidebar"
+      class="sidebar"
+      :class="{ 'sidebar-open': mobileOpen }"
+      aria-label="工作空间导航"
+      :inert="compact && !mobileOpen"
+    >
+      <RouterLink to="/dashboard" class="brand-link" aria-label="AgenticCommerce 工作台">
+        <BrandLogo />
+      </RouterLink>
+      <div class="organization">
+        <span class="organization-symbol"><AppIcon name="box" :size="19" /></span>
+        <div>
+          <strong>{{ user.userInfo?.tenant_name || '当前工作空间' }}</strong>
+          <small>企业工作空间</small>
         </div>
       </div>
-
       <nav class="sidebar-nav">
-        <div class="nav-section-title">核心业务中台</div>
-        <router-link to="/dashboard" class="nav-item" active-class="active">
-          <span class="nav-icon">📊</span>
-          <span class="nav-label">总览大盘</span>
-        </router-link>
-        <router-link to="/tasks" class="nav-item" active-class="active">
-          <span class="nav-icon">🎯</span>
-          <span class="nav-label">生成任务</span>
-        </router-link>
-        <router-link to="/batches" class="nav-item" active-class="active">
-          <span class="nav-icon">📦</span>
-          <span class="nav-label">批次下发</span>
-        </router-link>
-        <router-link to="/skus" class="nav-item" active-class="active">
-          <span class="nav-icon">🏷️</span>
-          <span class="nav-label">商品 SKU</span>
-        </router-link>
-
-        <div class="nav-section-title">多模态生成成果</div>
-        <router-link to="/copies" class="nav-item" active-class="active">
-          <span class="nav-icon">✍️</span>
-          <span class="nav-label">出海文案库</span>
-        </router-link>
-        <router-link to="/assets" class="nav-item" active-class="active">
-          <span class="nav-icon">🎨</span>
-          <span class="nav-label">媒体素材资产</span>
-        </router-link>
-        <router-link to="/compliance" class="nav-item" active-class="active">
-          <span class="nav-icon">🛡️</span>
-          <span class="nav-label">合规质检报告</span>
-        </router-link>
-        <router-link to="/packages" class="nav-item" active-class="active">
-          <span class="nav-icon">🎁</span>
-          <span class="nav-label">交付物打包</span>
-        </router-link>
-        <router-link to="/listings" class="nav-item" active-class="active">
-          <span class="nav-icon">🌐</span>
-          <span class="nav-label">跨境刊登发布</span>
-        </router-link>
-
-        <div class="nav-section-title">AI 底座与系统运维</div>
-        <router-link to="/knowledge" class="nav-item" active-class="active">
-          <span class="nav-icon">📚</span>
-          <span class="nav-label">品牌知识库 RAG</span>
-        </router-link>
-        <router-link to="/providers" class="nav-item" active-class="active">
-          <span class="nav-icon">🔌</span>
-          <span class="nav-label">AI 模型厂商配置</span>
-        </router-link>
-        <router-link to="/audit" class="nav-item" active-class="active">
-          <span class="nav-icon">📜</span>
-          <span class="nav-label">成本与审计</span>
-        </router-link>
-        <router-link to="/settings" class="nav-item" active-class="active">
-          <span class="nav-icon">⚙️</span>
-          <span class="nav-label">系统设置</span>
-        </router-link>
+        <section v-for="group in groups" :key="group.title">
+          <h2>{{ group.title }}</h2>
+          <RouterLink
+            v-for="item in group.items"
+            :key="item.path"
+            :to="item.path"
+            class="nav-item"
+            :class="{
+              'nav-active':
+                route.path === item.path ||
+                (item.path === '/tasks' && route.path.startsWith('/workbench/')),
+            }"
+          >
+            <AppIcon :name="item.icon" :size="18" />
+            <span>{{ item.title }}</span>
+          </RouterLink>
+        </section>
       </nav>
-
-      <div class="sidebar-footer">
-        <div class="user-pill">
-          <div class="user-avatar">JD</div>
-          <div class="user-meta">
-            <span class="user-name">{{ userStore.userInfo?.name || '已登录用户' }}</span>
-            <span class="user-role">{{ userStore.userInfo?.role || '' }}</span>
-          </div>
+      <div class="sidebar-profile">
+        <span class="avatar">{{ initial }}</span>
+        <div>
+          <strong>{{ user.userInfo?.name || '已登录用户' }}</strong>
+          <small>
+            {{
+              user.userInfo?.role === 'admin'
+                ? '管理员'
+                : user.userInfo
+                  ? '工作空间成员'
+                  : '正在获取身份'
+            }}
+          </small>
         </div>
+        <button class="icon-button" aria-label="退出登录" title="退出登录" @click="logout">
+          <AppIcon name="logout" :size="18" />
+        </button>
       </div>
     </aside>
-
-    <!-- 右侧主体内容容器 -->
-    <div class="main-wrapper">
-      <header class="top-header">
-        <div class="header-left">
-          <span class="tenant-badge">🏢 {{ userStore.userInfo?.tenant_name || '当前企业' }}</span>
-          <span class="env-tag">内容工作台</span>
+    <div class="main-wrapper" :inert="compact && mobileOpen">
+      <header class="app-header">
+        <div class="breadcrumb">
+          <button
+            class="icon-button mobile-menu"
+            aria-label="打开导航"
+            :aria-expanded="mobileOpen"
+            @click="mobileOpen = true"
+          >
+            <AppIcon name="menu" />
+          </button>
+          <span>{{ route.meta.group || '工作空间' }}</span>
+          <AppIcon name="chevron-right" :size="13" />
+          <strong>{{ route.meta.title }}</strong>
         </div>
-        <div class="header-right">
-          <router-link to="/tasks" class="btn btn-primary btn-sm">+ 快速发起生成</router-link>
-          <router-link to="/login" class="btn btn-secondary btn-sm" @click="userStore.clearToken()">退出</router-link>
+        <div class="header-actions">
+          <button class="search-trigger" @click="openSearch">
+            <AppIcon name="search" :size="17" />
+            <span>搜索功能页面</span>
+            <kbd>Ctrl K</kbd>
+          </button>
+          <span class="header-divider" />
+          <span class="mini-avatar" :title="user.userInfo?.name">{{ initial }}</span>
         </div>
       </header>
-
-      <main class="page-content">
-        <router-view />
+      <main id="main-content" class="page-content" tabindex="-1">
+        <div v-if="user.identityError" class="notice notice-warning" role="alert">
+          <AppIcon name="warning" />
+          <span>无法获取当前身份：{{ user.identityError }}</span>
+          <button class="text-button" @click="user.fetchUser().catch(() => {})">重试</button>
+        </div>
+        <RouterView />
       </main>
+      <footer class="app-footer">
+        <span>AGENTICCOMMERCE</span>
+        <span>让每一个好商品，都有好的表达。</span>
+      </footer>
     </div>
   </div>
+  <AppDialog
+    v-model="searchOpen"
+    title="快速前往"
+    description="搜索页面名称，使用方向键选择，按 Enter 打开。"
+  >
+    <div class="search-input">
+      <AppIcon name="search" />
+      <input
+        v-model="query"
+        autofocus
+        aria-label="搜索功能页面"
+        placeholder="你想前往哪里？"
+        @keydown.down.prevent="moveSearch(1)"
+        @keydown.up.prevent="moveSearch(-1)"
+        @keydown.enter.prevent="navigate(selected)"
+      />
+    </div>
+    <div class="command-results">
+      <button
+        v-for="(item, index) in results"
+        :key="item.path"
+        class="command-result"
+        :class="{ 'command-selected': selected === index }"
+        @click="navigate(index)"
+      >
+        <AppIcon :name="item.icon" />
+        <span>{{ item.title }}</span>
+        <AppIcon name="arrow-right" :size="16" />
+      </button>
+      <p v-if="!results.length" class="muted center padded">没有找到相关页面，请换个关键词。</p>
+    </div>
+  </AppDialog>
+  <UiHost />
 </template>
-
-<script setup lang="ts">
-import { computed, watch } from 'vue'
-import { useRoute } from 'vue-router'
-import { useUserStore } from '@/stores/user'
-const userStore = useUserStore()
-watch(() => userStore.token, token => {
-  if (token) userStore.fetchUser().catch(() => {})
-}, { immediate: true })
-
-const route = useRoute()
-const isLoginPage = computed(() => route.path === '/login')
-</script>
-
-<style scoped>
-.app-layout {
-  display: flex;
-  min-height: 100vh;
-}
-
-.login-layout {
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
-}
-
-.sidebar {
-  width: 250px;
-  background-color: var(--sidebar-bg);
-  display: flex;
-  flex-direction: column;
-  position: fixed;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 100;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.sidebar-header {
-  padding: 20px 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.logo-box {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.logo-icon {
-  font-size: 24px;
-  background: rgba(99, 102, 241, 0.2);
-  border-radius: 8px;
-  padding: 4px;
-}
-
-.logo-text h2 {
-  font-size: 16px;
-  font-weight: 700;
-  color: #fff;
-  letter-spacing: -0.3px;
-}
-
-.logo-sub {
-  font-size: 11px;
-  color: var(--text-light);
-}
-
-.sidebar-nav {
-  flex: 1;
-  padding: 12px;
-  overflow-y: auto;
-}
-
-.nav-section-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: #64748b;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  padding: 12px 10px 6px;
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
-  border-radius: var(--radius-sm);
-  color: #94a3b8;
-  text-decoration: none;
-  font-size: 13.5px;
-  font-weight: 500;
-  transition: all 0.15s ease;
-  margin-bottom: 2px;
-}
-
-.nav-item:hover {
-  background: var(--sidebar-hover);
-  color: #fff;
-}
-
-.nav-item.active {
-  background: linear-gradient(90deg, #4f46e5 0%, #6366f1 100%);
-  color: #fff;
-  box-shadow: 0 2px 6px rgba(79, 70, 229, 0.35);
-}
-
-.sidebar-footer {
-  padding: 14px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.user-pill {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px;
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: 8px;
-}
-
-.user-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #6366f1, #06b6d4);
-  color: #fff;
-  font-weight: 700;
-  font-size: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.user-meta {
-  display: flex;
-  flex-direction: column;
-}
-
-.user-name {
-  color: #fff;
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.user-role {
-  color: #64748b;
-  font-size: 11px;
-}
-
-.main-wrapper {
-  margin-left: 250px;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
-}
-
-.top-header {
-  height: 60px;
-  background: #fff;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 24px;
-  position: sticky;
-  top: 0;
-  z-index: 90;
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.tenant-badge {
-  font-size: 13px;
-  font-weight: 600;
-  color: #334155;
-  background: #f1f5f9;
-  padding: 4px 10px;
-  border-radius: 20px;
-}
-
-.env-tag {
-  font-size: 12px;
-  color: #10b981;
-  background: #ecfdf5;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-weight: 600;
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.page-content {
-  flex: 1;
-  padding: 24px;
-  background: var(--bg-main);
-}
-</style>

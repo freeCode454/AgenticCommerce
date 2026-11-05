@@ -1,180 +1,257 @@
-<template>
-  <div class="copy-page">
-    <div class="page-title-row">
-      <div>
-        <h1 class="page-title">出海高转化文案库</h1>
-        <p class="page-desc">沉淀 7-Agent 策划智能体产出的全套 Listing 标题、五点描述与长文案</p>
-      </div>
-    </div>
-
-    <!-- 文案卡片瀑布流 -->
-    <div class="copy-list">
-      <div v-for="c in copies" :key="c.id" class="card copy-card mb-4">
-        <div class="card-header">
-          <div class="header-left">
-            <span class="badge badge-info">{{ c.language.toUpperCase() }}</span>
-            <span class="sku-tag">SKU: {{ c.sku_name }} ({{ c.sku_code }})</span>
-            <span class="text-xs text-muted">任务: {{ c.task_id }}</span>
-          </div>
-          <div class="header-right">
-            <button class="btn btn-secondary btn-sm" @click="copyText(c)">📋 复制全文</button>
-            <button class="btn btn-primary btn-sm" @click="openEditModal(c)">✏️ 在线微调</button>
-          </div>
-        </div>
-
-        <div class="copy-section mt-3">
-          <label class="section-label">Listing 核心大卖标题</label>
-          <div class="title-text">{{ c.title }}</div>
-        </div>
-
-        <div class="copy-section mt-3">
-          <label class="section-label">五点描述 (Bullets)</label>
-          <ul class="bullets-box">
-            <li v-for="(b, idx) in c.bullets" :key="idx" class="bullet-item">{{ b }}</li>
-          </ul>
-        </div>
-
-        <div class="copy-section mt-3">
-          <label class="section-label">SEO 搜索关键词</label>
-          <div class="keywords-wrap">
-            <span v-for="(k, idx) in c.keywords" :key="idx" class="keyword-tag"># {{ k }}</span>
-          </div>
-        </div>
-      </div>
-
-      <div v-if="copies.length === 0" class="card text-center p-5 text-muted">
-        暂无已生成文案，请前往工作台或任务列表发起生成
-      </div>
-    </div>
-
-    <!-- 编辑文案弹窗 -->
-    <div v-if="editingCopy" class="modal-overlay" @click.self="editingCopy = null">
-      <div class="modal-content modal-lg">
-        <h3 class="modal-title mb-4">人工在线微调文案</h3>
-        <div class="form-group">
-          <label class="form-label">标题 (Title)</label>
-          <input type="text" v-model="editForm.title" class="form-input" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">五点描述 (每行一条)</label>
-          <textarea v-model="editFormBulletsText" class="form-textarea" rows="5"></textarea>
-        </div>
-        <div class="modal-footer mt-4">
-          <button class="btn btn-secondary" @click="editingCopy = null">取消</button>
-          <button class="btn btn-primary" @click="saveEditedCopy">保存覆写</button>
-        </div>
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import client from '@/api/client'
-
-const copies = ref<any[]>([])
-const editingCopy = ref<any>(null)
-const editForm = ref({ title: '' })
-const editFormBulletsText = ref('')
-
-async function loadCopies() {
+import { useCollection } from '@/composables/useCollection'
+import { useUiStore } from '@/stores/ui'
+import { dateText, errorMessage, fullCopy } from '@/utils/format'
+import type { ApiResponse, CopyContent } from '@/types'
+import PageHeading from '@/components/ui/PageHeading.vue'
+import PageState from '@/components/ui/PageState.vue'
+import PaginationBar from '@/components/ui/PaginationBar.vue'
+import AppDialog from '@/components/ui/AppDialog.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
+const route = useRoute(),
+  ui = useUiStore(),
+  list = useCollection<CopyContent>('/copies', 8, {
+    task_id: String(route.query.task_id || ''),
+  }),
+  open = ref(false),
+  editing = ref(false),
+  selected = ref<CopyContent | null>(null),
+  busy = ref(false),
+  fetching = ref(false),
+  failure = ref(''),
+  loadError = ref('')
+const form = reactive({
+  title: '',
+  bullets: '',
+  description: '',
+  keywords: '',
+})
+let request = 0
+watch(
+  () => route.query.task_id,
+  (value) => {
+    list.params.task_id = String(value || '')
+    void list.reload(true)
+  },
+)
+async function view(copy: CopyContent, edit = false) {
+  if (!copy.id) return
+  const seq = ++request
+  selected.value = copy
+  editing.value = edit
+  open.value = true
+  fetching.value = true
+  failure.value = ''
+  loadError.value = ''
   try {
-    const res = await client.get('/copies?page=1&page_size=30')
-    copies.value = res.data?.data?.items || []
+    const { data } = await client.get<ApiResponse<CopyContent>>(`/copies/${copy.id}`)
+    if (seq !== request || !open.value) return
+    selected.value = data.data
+    fill()
   } catch (e) {
-    console.error(e)
+    if (seq === request) loadError.value = errorMessage(e)
+  } finally {
+    if (seq === request) fetching.value = false
   }
 }
-
-function copyText(c: any) {
-  const text = `TITLE:\n${c.title}\n\nBULLETS:\n${c.bullets?.join('\n')}\n\nKEYWORDS:\n${c.keywords?.join(', ')}`
-  navigator.clipboard.writeText(text)
-  alert('文案已复制到剪贴板！')
+function editSelected() {
+  editing.value = true
+  fill()
 }
-
-function openEditModal(c: any) {
-  editingCopy.value = c
-  editForm.value.title = c.title
-  editFormBulletsText.value = (c.bullets || []).join('\n')
+function fill() {
+  if (!selected.value) return
+  Object.assign(form, {
+    title: selected.value.title,
+    bullets: (selected.value.bullets || []).join('\n'),
+    description: selected.value.description || '',
+    keywords: (selected.value.keywords || []).join(', '),
+  })
 }
-
-async function saveEditedCopy() {
-  if (!editingCopy.value) return
-  const bullets = editFormBulletsText.value.split('\n').filter(b => b.trim())
+async function save() {
+  if (busy.value || !selected.value?.id) return
+  busy.value = true
+  failure.value = ''
   try {
-    await client.put(`/copies/${editingCopy.value.id}`, {
-      title: editForm.value.title,
-      bullets: bullets
+    await client.put(`/copies/${selected.value.id}`, {
+      title: form.title.trim(),
+      bullets: form.bullets
+        .split('\n')
+        .map((v) => v.trim())
+        .filter(Boolean),
+      description: form.description.trim(),
+      keywords: form.keywords
+        .split(/[,，\n]/)
+        .map((v) => v.trim())
+        .filter(Boolean),
     })
-    editingCopy.value = null
-    alert('文案保存成功！')
-    loadCopies()
+    open.value = false
+    ui.notify('文案已保存，需要重新审核后才能交付。')
+    await list.reload()
   } catch (e) {
-    alert('保存失败')
+    failure.value = errorMessage(e)
+  } finally {
+    busy.value = false
   }
 }
-
-onMounted(() => {
-  loadCopies()
+watch(open, (value) => {
+  if (!value) {
+    ++request
+    selected.value = null
+    failure.value = ''
+  }
 })
 </script>
-
-<style scoped>
-.page-title-row { margin-bottom: 24px; }
-.page-title { font-size: 22px; font-weight: 700; }
-.page-desc { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
-
-.copy-card { padding: 20px; }
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 12px;
-}
-.header-left { display: flex; align-items: center; gap: 10px; }
-.sku-tag { font-size: 12.5px; font-weight: 600; color: #334155; }
-.text-xs { font-size: 11px; }
-
-.section-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-  display: block;
-  margin-bottom: 4px;
-}
-.title-text {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-main);
-  background: #f8fafc;
-  padding: 8px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-}
-.bullets-box {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.bullet-item {
-  background: #f8fafc;
-  padding: 6px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  font-size: 13px;
-}
-.keywords-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
-.keyword-tag {
-  background: #eef2ff;
-  color: var(--primary);
-  font-size: 12px;
-  padding: 3px 8px;
-  border-radius: 4px;
-}
-
-.modal-lg { max-width: 680px; }
-.modal-footer { display: flex; justify-content: flex-end; gap: 12px; }
-.mb-4 { margin-bottom: 16px; }
-</style>
+<template>
+  <PageHeading
+    title="文案内容"
+    description="让产品价值被清楚地看见，管理每一份品牌表达。"
+    eyebrow="COPYWRITING"
+  />
+  <div class="toolbar">
+    <span class="text-muted">当前生成内容为英文 Amazon 商品文案</span>
+    <RouterLink v-if="list.params.task_id" class="text-button" to="/copies">
+      查看全部文案
+    </RouterLink>
+    <button class="btn btn-secondary" :disabled="list.loading" @click="list.reload()">
+      <AppIcon name="refresh" :size="16" />
+      刷新
+    </button>
+  </div>
+  <PageState
+    :loading="list.loading"
+    :error="list.error"
+    :error-code="list.errorCode"
+    :empty="!list.items.length"
+    title="还没有文案内容"
+    description="生成任务产出文案后，会自动汇集到这里。"
+    icon="file"
+    @retry="list.reload()"
+  >
+    <div class="copy-list">
+      <article v-for="copy in list.items" :key="copy.id" class="copy-card">
+        <div class="copy-meta">
+          <span>
+            {{ copy.sku_name || copy.sku_code || '商品文案' }} · {{ dateText(copy.create_time) }}
+          </span>
+          <StatusBadge :status="copy.status || 'draft'" />
+        </div>
+        <h2>{{ copy.title }}</h2>
+        <p class="prose">{{ copy.description || '暂无商品描述' }}</p>
+        <div class="copy-card-footer">
+          <span class="text-muted text-sm">
+            {{ copy.bullets?.length || 0 }} 条卖点 · {{ copy.language || '未标注语言' }}
+          </span>
+          <div class="row wrap">
+            <button class="btn btn-secondary btn-sm" @click="ui.copy(fullCopy(copy))">
+              <AppIcon name="copy" :size="14" />
+              复制
+            </button>
+            <button class="btn btn-secondary btn-sm" @click="view(copy)">查看全文</button>
+            <button class="btn btn-primary btn-sm" @click="view(copy, true)">
+              <AppIcon name="edit" :size="14" />
+              编辑
+            </button>
+          </div>
+        </div>
+      </article>
+    </div>
+  </PageState>
+  <PaginationBar
+    :page="list.page"
+    @change="list.page = $event"
+    :total="list.total"
+    :size="list.size"
+    :loading="list.loading"
+    :has-more="list.hasMore"
+  />
+  <AppDialog v-model="open" :title="editing ? '编辑文案' : '文案详情'" :busy="busy" wide>
+    <PageState :loading="fetching" :error="loadError" @retry="selected && view(selected, editing)">
+      <form v-if="editing" id="copy-edit" class="form-stack" @submit.prevent="save">
+        <p class="notice notice-warning">
+          保存会使原审核结果失效，需要重新审核。重新运行任务可能产生模型费用。
+        </p>
+        <p v-if="failure" class="notice notice-error" role="alert">
+          {{ failure }}
+        </p>
+        <div class="form-group">
+          <label for="copy-title">商品标题</label>
+          <textarea
+            id="copy-title"
+            v-model="form.title"
+            class="form-textarea"
+            rows="3"
+            required
+            :disabled="busy"
+          />
+        </div>
+        <div class="form-group">
+          <label for="copy-bullets">核心卖点 · 每行一条</label>
+          <textarea
+            id="copy-bullets"
+            v-model="form.bullets"
+            class="form-textarea"
+            rows="6"
+            :disabled="busy"
+          />
+        </div>
+        <div class="form-group">
+          <label for="copy-description">商品描述</label>
+          <textarea
+            id="copy-description"
+            v-model="form.description"
+            class="form-textarea"
+            rows="6"
+            :disabled="busy"
+          />
+        </div>
+        <div class="form-group">
+          <label for="copy-keywords">关键词 · 逗号分隔</label>
+          <textarea
+            id="copy-keywords"
+            v-model="form.keywords"
+            class="form-textarea"
+            rows="2"
+            :disabled="busy"
+          />
+        </div>
+      </form>
+      <div v-else-if="selected" class="stack">
+        <h2 class="content-title">{{ selected.title }}</h2>
+        <ul class="bullets">
+          <li v-for="(bullet, i) in selected.bullets" :key="i">{{ bullet }}</li>
+        </ul>
+        <p class="prose">{{ selected.description }}</p>
+        <div class="row wrap">
+          <span v-for="(keyword, i) in selected.keywords" :key="i" class="badge badge-neutral">
+            {{ keyword }}
+          </span>
+        </div>
+      </div>
+    </PageState>
+    <template #footer>
+      <button class="btn btn-secondary" :disabled="busy" @click="open = false">关闭</button>
+      <template v-if="!fetching && !loadError && selected">
+        <button v-if="!editing" class="btn btn-secondary" @click="ui.copy(fullCopy(selected))">
+          复制全文
+        </button>
+        <button v-if="!editing" class="btn btn-primary" @click="editSelected">编辑文案</button>
+        <button v-else type="submit" form="copy-edit" class="btn btn-primary" :disabled="busy">
+          {{ busy ? '保存中…' : '保存并标记待审核' }}
+        </button>
+      </template>
+      <button
+        v-else-if="editing && !fetching && !loadError"
+        type="submit"
+        form="copy-edit"
+        class="btn btn-primary"
+        :disabled="busy"
+      >
+        {{ busy ? '保存中…' : '重试保存' }}
+      </button>
+    </template>
+  </AppDialog>
+</template>

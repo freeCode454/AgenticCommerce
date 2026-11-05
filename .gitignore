@@ -85,3 +85,7 @@ pnpm-debug.log*
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Browser acceptance artifacts
+frontend/test-results/
+frontend/playwright-report/

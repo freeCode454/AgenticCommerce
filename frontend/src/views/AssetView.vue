@@ -1,156 +1,166 @@
-<template>
-  <div class="asset-page">
-    <div class="page-title-row">
-      <div>
-        <h1 class="page-title">媒体素材资产库</h1>
-        <p class="page-desc">汇集通义万相 2.1 高清多视角图片与快手可灵 AI 动态带货短视频</p>
-      </div>
-    </div>
-
-    <!-- 筛选栏 -->
-    <div class="card filter-bar mb-4">
-      <div class="filter-group">
-        <label>素材类型:</label>
-        <select v-model="filterType" class="form-select" @change="loadAssets">
-          <option value="">全部类型</option>
-          <option value="image">静态图片 (Images)</option>
-          <option value="video">动态短视频 (Videos)</option>
-        </select>
-      </div>
-      <div class="filter-group">
-        <label>拍摄视角:</label>
-        <select v-model="filterSubType" class="form-select" @change="loadAssets">
-          <option value="">全部视角</option>
-          <option value="main">白底主图 (Main)</option>
-          <option value="scene">场景图 (Scene)</option>
-          <option value="detail">细节图 (Detail)</option>
-        </select>
-      </div>
-      <button class="btn btn-secondary btn-sm" @click="loadAssets">筛选刷新</button>
-    </div>
-
-    <!-- 资产网格 -->
-    <div class="asset-grid">
-      <div v-for="a in assets" :key="a.id" class="asset-item card">
-        <div class="asset-preview">
-          <img v-if="a.type === 'image'" :src="a.url" class="asset-media" />
-          <video v-else-if="a.type === 'video'" :src="a.url" controls class="asset-media"></video>
-          <span class="type-badge">{{ a.sub_type || a.type }}</span>
-        </div>
-        <div class="asset-info mt-2">
-          <div class="sku-name"><strong>{{ a.sku_name }}</strong></div>
-          <div class="text-xs text-muted">ID: {{ a.id }}</div>
-          <div class="asset-meta-row mt-2">
-            <span class="badge badge-info">{{ a.meta?.size || a.meta?.model || 'HD' }}</span>
-            <span v-if="a.is_mock" class="badge badge-warning">Mock演示</span>
-            <span v-else class="badge badge-success">真实AI生成</span>
-            <a :href="a.url" target="_blank" class="download-link">下载素材 ↓</a>
-          </div>
-        </div>
-      </div>
-
-      <div v-if="assets.length === 0" class="empty-state card">
-        暂无匹配素材资产
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import client from '@/api/client'
-
-const assets = ref<any[]>([])
-const filterType = ref('')
-const filterSubType = ref('')
-
-async function loadAssets() {
-  try {
-    let url = '/assets?page=1&page_size=50'
-    if (filterType.value) url += `&type=${filterType.value}`
-    if (filterSubType.value) url += `&sub_type=${filterSubType.value}`
-    const res = await client.get(url)
-    assets.value = res.data?.data?.items || []
-  } catch (e) {
-    console.error(e)
-  }
+import { ref } from 'vue'
+import { useCollection } from '@/composables/useCollection'
+import { dateText, safeUrl } from '@/utils/format'
+import type { Asset } from '@/types'
+import PageHeading from '@/components/ui/PageHeading.vue'
+import PageState from '@/components/ui/PageState.vue'
+import PaginationBar from '@/components/ui/PaginationBar.vue'
+import MediaPreview from '@/components/ui/MediaPreview.vue'
+import AppDialog from '@/components/ui/AppDialog.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+const list = useCollection<Asset>('/assets', 12, { type: '', sub_type: '' }),
+  selected = ref<Asset | null>(null),
+  open = ref(false)
+function view(asset: Asset) {
+  selected.value = asset
+  open.value = true
 }
-
-onMounted(() => {
-  loadAssets()
-})
+function kind(asset: Asset) {
+  return (
+    (
+      {
+        main: '商品主图',
+        scene: '场景图',
+        detail: '细节图',
+        product_showcase: '展示视频',
+      } as Record<string, string>
+    )[asset.sub_type || ''] || (asset.type === 'video' ? '视频' : '图片')
+  )
+}
 </script>
-
-<style scoped>
-.page-title-row { margin-bottom: 24px; }
-.page-title { font-size: 22px; font-weight: 700; }
-.page-desc { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
-
-.filter-bar {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 14px 18px;
-}
-.filter-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.asset-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 18px;
-}
-.asset-item {
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-}
-.asset-preview {
-  position: relative;
-  aspect-ratio: 1;
-  background: #000;
-  border-radius: 8px;
-  overflow: hidden;
-}
-.asset-media {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.type-badge {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  background: rgba(15, 23, 42, 0.75);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 4px;
-  text-transform: uppercase;
-}
-
-.sku-name { font-size: 13.5px; }
-.text-xs { font-size: 11px; }
-.asset-meta-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 12px;
-}
-.download-link {
-  color: var(--primary);
-  text-decoration: none;
-  font-weight: 600;
-}
-.empty-state {
-  grid-column: 1 / -1;
-  text-align: center;
-  padding: 40px;
-  color: var(--text-muted);
-}
-</style>
+<template>
+  <PageHeading
+    title="素材库"
+    description="每一次创作，都在这里积累为品牌资产。"
+    eyebrow="CONTENT LIBRARY"
+  />
+  <div class="toolbar">
+    <div class="filter-group">
+      <label for="asset-type">素材类型</label>
+      <select
+        id="asset-type"
+        v-model="list.params.type"
+        class="form-select"
+        @change="list.reload(true)"
+      >
+        <option value="">全部类型</option>
+        <option value="image">图片</option>
+        <option value="video">视频</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label for="asset-view">素材视角</label>
+      <select
+        id="asset-view"
+        v-model="list.params.sub_type"
+        class="form-select"
+        @change="list.reload(true)"
+      >
+        <option value="">全部视角</option>
+        <option value="main">商品主图</option>
+        <option value="scene">场景图</option>
+        <option value="detail">细节图</option>
+        <option value="product_showcase">展示视频</option>
+      </select>
+    </div>
+    <button class="btn btn-secondary" :disabled="list.loading" @click="list.reload()">
+      <AppIcon name="refresh" :size="16" />
+      刷新
+    </button>
+  </div>
+  <PageState
+    :loading="list.loading"
+    :error="list.error"
+    :error-code="list.errorCode"
+    :empty="!list.items.length"
+    title="暂无匹配素材"
+    description="调整筛选条件，或在商品资料中创建一次生成任务。"
+    icon="image"
+    @retry="list.reload()"
+  >
+    <div class="media-grid">
+      <article v-for="asset in list.items" :key="asset.id" class="media-card">
+        <div class="media-open">
+          <MediaPreview :src="asset.url" :type="asset.type" :alt="asset.sku_name || kind(asset)" />
+        </div>
+        <div class="media-card-body">
+          <div class="row between">
+            <span class="badge badge-neutral">{{ kind(asset) }}</span>
+            <span v-if="asset.is_mock" class="badge badge-warning">示例素材</span>
+          </div>
+          <h3 class="mt-3">{{ asset.sku_name || '未关联商品名称' }}</h3>
+          <p>
+            {{ asset.sku_code || asset.sku_id }} ·
+            {{ dateText(asset.create_time) }}
+          </p>
+          <button class="text-button mt-3" @click="view(asset)">
+            查看素材
+            <AppIcon name="arrow-right" :size="14" />
+          </button>
+        </div>
+      </article>
+    </div>
+  </PageState>
+  <PaginationBar
+    :page="list.page"
+    @change="list.page = $event"
+    :total="list.total"
+    :size="list.size"
+    :loading="list.loading"
+    :has-more="list.hasMore"
+  />
+  <AppDialog v-model="open" title="素材预览" wide>
+    <template v-if="selected">
+      <div class="media-full">
+        <MediaPreview
+          :src="selected.url"
+          :type="selected.type"
+          :alt="selected.sku_name || '素材预览'"
+          controls
+        />
+      </div>
+      <dl class="details-list">
+        <div>
+          <dt>关联商品</dt>
+          <dd>{{ selected.sku_name || '—' }}</dd>
+        </div>
+        <div>
+          <dt>素材类型</dt>
+          <dd>{{ kind(selected) }}</dd>
+        </div>
+        <div>
+          <dt>生成时间</dt>
+          <dd>{{ dateText(selected.create_time) }}</dd>
+        </div>
+        <div>
+          <dt>素材 ID</dt>
+          <dd>{{ selected.id }}</dd>
+        </div>
+      </dl>
+      <p v-if="selected.is_mock" class="notice notice-warning mt-4">
+        这是一条后端标记的示例素材，请核实后再用于交付。
+      </p>
+    </template>
+    <template #footer>
+      <RouterLink
+        v-if="selected?.task_id"
+        class="btn btn-secondary"
+        :to="`/workbench/${selected.task_id}`"
+        @click="open = false"
+      >
+        查看任务
+      </RouterLink>
+      <a
+        v-if="safeUrl(selected?.url)"
+        class="btn btn-primary"
+        :href="safeUrl(selected?.url)"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        打开原文件
+        <AppIcon name="external" :size="15" />
+      </a>
+    </template>
+  </AppDialog>
+</template>

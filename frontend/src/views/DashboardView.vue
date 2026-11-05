@@ -1,315 +1,260 @@
+<script setup lang="ts">
+import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { useRouter } from 'vue-router'
+import client from '@/api/client'
+import type { Task, CostSummary, ApiResponse, PageData } from '@/types'
+import { dateText, moneyText, numberText, platformText } from '@/utils/format'
+import PageHeading from '@/components/ui/PageHeading.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import PageState from '@/components/ui/PageState.vue'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
+import TaskCreateDialog from '@/components/ui/TaskCreateDialog.vue'
+const router = useRouter(),
+  showCreate = ref(false),
+  loading = ref(true),
+  tasks = ref<Task[]>([]),
+  tasksError = ref('')
+const counts = ref<{
+  sku?: number
+  tasks?: number
+  assets?: number
+  cost?: number
+}>({})
+const errors = ref(false)
+let controller: AbortController | undefined,
+  sequence = 0
+const greeting = computed(() => {
+  const hour = new Date().getHours()
+  return hour < 12 ? '上午好，创作团队。' : hour < 18 ? '下午好，创作团队。' : '晚上好，创作团队。'
+})
+async function load() {
+  const id = ++sequence
+  controller?.abort()
+  controller = new AbortController()
+  loading.value = true
+  errors.value = false
+  tasksError.value = ''
+  const config = { signal: controller.signal }
+  const results = await Promise.allSettled([
+    client.get<ApiResponse<PageData<Task>>>('/tasks', {
+      ...config,
+      params: { page: 1, page_size: 5 },
+    }),
+    client.get<ApiResponse<PageData<unknown>>>('/skus', {
+      ...config,
+      params: { page: 1, page_size: 1 },
+    }),
+    client.get<ApiResponse<PageData<unknown>>>('/assets', {
+      ...config,
+      params: { page: 1, page_size: 1 },
+    }),
+    client.get<ApiResponse<CostSummary>>('/audit/costs', config),
+  ])
+  if (id !== sequence) return
+  const [task, sku, asset, cost] = results
+  counts.value = {
+    tasks: task.status === 'fulfilled' ? task.value.data.data.total : undefined,
+    sku: sku.status === 'fulfilled' ? sku.value.data.data.total : undefined,
+    assets: asset.status === 'fulfilled' ? asset.value.data.data.total : undefined,
+    cost: cost.status === 'fulfilled' ? cost.value.data.data.total_cost_usd : undefined,
+  }
+  if (task.status === 'fulfilled') tasks.value = task.value.data.data.items
+  else tasksError.value = '任务列表暂不可用，请重新加载。'
+  errors.value = results.some((result) => result.status === 'rejected')
+  loading.value = false
+}
+onMounted(load)
+onUnmounted(() => {
+  ++sequence
+  controller?.abort()
+})
+</script>
 <template>
-  <div class="dashboard-page">
-    <div class="page-title-row">
-      <div>
-        <h1 class="page-title">运营管理总览大盘</h1>
-        <p class="page-desc">实时监控 7-Agent 多智能体集群运行状态、物料生成吞吐量与大模型消耗</p>
+  <PageHeading :title="greeting" description="把创作交给 AI，把时间留给更好的生意。">
+    <button class="btn btn-primary" @click="showCreate = true">
+      <AppIcon name="plus" :size="17" />
+      新建生成任务
+    </button>
+  </PageHeading>
+  <section class="welcome-banner">
+    <div class="welcome-copy">
+      <span class="overline">FROM PRODUCT TO POSSIBILITY</span>
+      <h2>好商品，值得被更多人看见。</h2>
+      <p>从一份商品资料开始，让文案、图片与视频有序发生。</p>
+      <RouterLink class="text-button" to="/skus?new=1">
+        录入商品，开启新创作
+        <AppIcon name="arrow-right" :size="15" />
+      </RouterLink>
+    </div>
+    <div class="workflow-art" aria-hidden="true">
+      <div class="workflow-card">
+        <AppIcon name="box" :size="26" />
+        <span>商品资料</span>
       </div>
-      <div class="actions">
-        <router-link to="/tasks" class="btn btn-primary">+ 发起新任务</router-link>
+      <AppIcon name="arrow-right" :size="17" />
+      <div class="workflow-card dark">
+        <AppIcon name="spark" :size="28" />
+        <span>AI 创作</span>
+      </div>
+      <AppIcon name="arrow-right" :size="17" />
+      <div class="workflow-card">
+        <AppIcon name="shield" :size="26" />
+        <span>审核交付</span>
       </div>
     </div>
-
-    <!-- 顶部核心指标 KPI 栅格 -->
-    <div class="kpi-grid">
-      <div class="kpi-card card">
-        <div class="kpi-icon icon-indigo">🎯</div>
-        <div class="kpi-info">
-          <span class="kpi-label">今日生成任务</span>
-          <h3 class="kpi-value">{{ stats.taskCount }}</h3>
-          <span class="kpi-trend trend-up">↑ 100% 自动调度</span>
-        </div>
+  </section>
+  <div v-if="errors" class="notice notice-warning">
+    <AppIcon name="warning" />
+    <span>部分数据暂不可用，已保留可用内容。</span>
+    <button class="text-button" @click="load">重新加载</button>
+  </div>
+  <section class="metrics-grid" aria-label="工作空间真实数据">
+    <article
+      v-for="metric in [
+        {
+          label: '商品总数',
+          value: counts.sku,
+          unit: '件',
+          icon: 'box',
+          description: '已录入的商品资料',
+        },
+        {
+          label: '生成任务',
+          value: counts.tasks,
+          unit: '项',
+          icon: 'layers',
+          description: '当前工作空间的全部任务',
+        },
+        {
+          label: '已生成素材',
+          value: counts.assets,
+          unit: '份',
+          icon: 'image',
+          description: '文案以外的图片与视频',
+        },
+      ]"
+      :key="metric.label"
+      class="metric"
+    >
+      <div class="metric-top">
+        <span>{{ metric.label }}</span>
+        <span class="metric-icon"><AppIcon :name="metric.icon" :size="17" /></span>
       </div>
-
-      <div class="kpi-card card">
-        <div class="kpi-icon icon-emerald">🏷️</div>
-        <div class="kpi-info">
-          <span class="kpi-label">商品 SKU 资产</span>
-          <h3 class="kpi-value">{{ stats.skuCount }}</h3>
-          <span class="kpi-trend">已就绪待出海</span>
-        </div>
+      <div class="metric-number">
+        {{ loading ? '—' : numberText(metric.value) }}
+        <small v-if="metric.value !== undefined">{{ metric.unit }}</small>
       </div>
-
-      <div class="kpi-card card">
-        <div class="kpi-icon icon-amber">🎨</div>
-        <div class="kpi-info">
-          <span class="kpi-label">生成图像与视频</span>
-          <h3 class="kpi-value">{{ stats.assetCount }}</h3>
-          <span class="kpi-trend trend-up">多视角多镜头</span>
-        </div>
+      <p>{{ metric.description }}</p>
+    </article>
+    <article class="metric metric-cost">
+      <div class="metric-top">
+        <span>累计预估费用</span>
+        <span class="metric-icon"><AppIcon name="chart" :size="17" /></span>
       </div>
-
-      <div class="kpi-card card">
-        <div class="kpi-icon icon-cyan">⚡</div>
-        <div class="kpi-info">
-          <span class="kpi-label">累计消耗 Tokens</span>
-          <h3 class="kpi-value">{{ stats.tokens }}</h3>
-          <span class="kpi-trend">成本估算: ${{ stats.cost }}</span>
-        </div>
+      <div class="metric-number">
+        {{ loading ? '—' : moneyText(counts.cost) }}
       </div>
-    </div>
-
-    <!-- 核心两栏排版 -->
-    <div class="content-grid">
-      <!-- 左栏：最新智能体任务流水 -->
-      <div class="card recent-tasks-card">
-        <div class="card-header">
-          <h3 class="card-title">最新智能体生成流水</h3>
-          <router-link to="/tasks" class="link-more">查看全部任务 →</router-link>
+      <p>USD · 根据节点执行记录汇总</p>
+    </article>
+  </section>
+  <div class="dashboard-columns">
+    <section class="panel">
+      <header class="panel-heading">
+        <div>
+          <h2>最近的创作</h2>
+          <p>每一步进展，都在这里。</p>
         </div>
-        <div class="table-container">
+        <RouterLink class="text-button" to="/tasks">
+          全部任务
+          <AppIcon name="arrow-right" :size="14" />
+        </RouterLink>
+      </header>
+      <PageState
+        :loading="loading"
+        :error="tasksError"
+        :empty="!tasks.length"
+        title="你的第一份创作，从这里开始"
+        description="先录入商品资料，再创建生成任务。"
+        @retry="load"
+      >
+        <template #action>
+          <button v-if="(counts.sku || 0) > 0" class="btn btn-primary" @click="showCreate = true">
+            <AppIcon name="plus" :size="16" />
+            创建第一个生成任务
+          </button>
+          <RouterLink v-else class="btn btn-primary" to="/skus?new=1">
+            <AppIcon name="plus" :size="16" />
+            录入第一个商品
+          </RouterLink>
+        </template>
+        <div class="table-scroll">
           <table class="data-table">
             <thead>
               <tr>
-                <th>任务 ID</th>
-                <th>商品 SKU</th>
-                <th>当前流转节点</th>
+                <th>商品 / 任务</th>
+                <th>目标平台</th>
                 <th>状态</th>
-                <th>重试次数</th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="t in recentTasks" :key="t.id">
-                <td><code class="code-pill">{{ t.id }}</code></td>
-                <td><strong>{{ t.sku_name || t.sku_id }}</strong></td>
-                <td><span class="node-pill">⚡ {{ t.current_node || 'orchestrator' }}</span></td>
-                <td>
-                  <span :class="['badge', t.status === 'completed' ? 'badge-success' : 'badge-info']">
-                    {{ t.status }}
-                  </span>
+              <tr v-for="task in tasks" :key="task.id">
+                <td class="table-main">
+                  <strong>{{ task.sku_name || '未命名商品' }}</strong>
+                  <small>{{ task.sku_code || task.id }} · {{ dateText(task.create_time) }}</small>
                 </td>
-                <td>{{ t.retry_count }} / 2</td>
                 <td>
-                  <router-link :to="`/workbench/${t.id}`" class="btn btn-secondary btn-sm">进入工作台</router-link>
+                  <span class="platform-tag">{{ platformText(task.config?.platform) }}</span>
                 </td>
-              </tr>
-              <tr v-if="recentTasks.length === 0">
-                <td colspan="6" class="text-center text-muted">暂无任务数据，请点击右上角发起</td>
+                <td><StatusBadge :status="task.status" /></td>
+                <td>
+                  <RouterLink
+                    :to="`/workbench/${task.id}`"
+                    class="icon-button"
+                    :aria-label="`查看${task.sku_name || '任务'}`"
+                  >
+                    <AppIcon name="chevron-right" :size="17" />
+                  </RouterLink>
+                </td>
               </tr>
             </tbody>
           </table>
         </div>
-      </div>
-
-      <!-- 右栏：AI 模型厂商连通性状态与快速入口 -->
-      <div class="side-col">
-        <div class="card provider-status-card">
-          <h3 class="card-title">AI 大模型服务底座</h3>
-          <div class="provider-list">
-            <div class="provider-item">
-              <div class="provider-meta">
-                <span class="provider-name">通义千问 (Qwen-Plus)</span>
-                <span class="provider-type">LLM / 需求分析与文案</span>
-              </div>
-              <span class="badge badge-success">正常运作 (Mock/API)</span>
-            </div>
-            <div class="provider-item">
-              <div class="provider-meta">
-                <span class="provider-name">通义万相 (Wanx 2.1)</span>
-                <span class="provider-type">Image / 多视角商业生图</span>
-              </div>
-              <span class="badge badge-success">就绪</span>
-            </div>
-            <div class="provider-item">
-              <div class="provider-meta">
-                <span class="provider-name">快手可灵 (Kling AI)</span>
-                <span class="provider-type">Video / 5秒动态短视频</span>
-              </div>
-              <span class="badge badge-success">就绪</span>
-            </div>
-          </div>
-          <router-link to="/providers" class="btn btn-secondary btn-sm full-width mt-3">配置真实 API Key →</router-link>
+      </PageState>
+    </section>
+    <aside class="dashboard-aside stack">
+      <section class="launch-panel">
+        <span class="overline">
+          <AppIcon name="spark" :size="18" />
+          LET'S CREATE
+        </span>
+        <h2>
+          下一个好内容，
+          <br />
+          从这里开始。
+        </h2>
+        <p>选择真实商品，让 AI 成为你的创作伙伴。</p>
+        <button class="btn btn-lime" @click="showCreate = true">
+          创建新任务
+          <AppIcon name="arrow-right" :size="16" />
+        </button>
+      </section>
+      <section class="brand-tip">
+        <AppIcon name="book" :size="23" />
+        <div>
+          <h3>先让 AI 了解你的品牌</h3>
+          <p>加入品牌规范，让每次创作更像你。</p>
+          <RouterLink class="text-button" to="/knowledge">
+            完善知识库
+            <AppIcon name="arrow-right" :size="14" />
+          </RouterLink>
         </div>
-
-        <div class="card p-ev-card mt-4">
-          <h3 class="card-title">P-E-V 自主闭环机制</h3>
-          <p class="text-muted text-sm mt-2">
-            平台深度贯彻 <strong>Plan (策划) - Execute (生图/生视频) - Verify (合规质检)</strong> 自主循环。
-            审核未达 85 分或存在违规项时，系统将携带建议自动回退重试，保障交付 100% 合规。
-          </p>
-        </div>
-      </div>
-    </div>
+      </section>
+    </aside>
   </div>
+  <TaskCreateDialog
+    v-if="showCreate"
+    v-model="showCreate"
+    @created="router.push(`/workbench/${$event}`)"
+  />
 </template>
-
-<script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import client from '@/api/client'
-
-const stats = ref({
-  taskCount: 0,
-  skuCount: 0,
-  assetCount: 0,
-  tokens: 0,
-  cost: '0.00'
-})
-
-const recentTasks = ref<any[]>([])
-
-async function loadData() {
-  try {
-    const [tasksRes, skusRes, assetsRes, costRes] = await Promise.all([
-      client.get('/tasks?page=1&page_size=5'),
-      client.get('/skus?page=1&page_size=1'),
-      client.get('/assets?page=1&page_size=1'),
-      client.get('/audit/costs')
-    ])
-
-    recentTasks.value = tasksRes.data?.data?.items || []
-    stats.value.taskCount = tasksRes.data?.data?.total || recentTasks.value.length
-    stats.value.skuCount = skusRes.data?.data?.total ?? 0
-    stats.value.assetCount = assetsRes.data?.data?.total ?? 0
-
-    const costData = costRes.data?.data || {}
-    stats.value.tokens = costData.total_tokens ?? 0
-    stats.value.cost = costData.total_cost_usd?.toFixed(4) ?? '0.0000'
-  } catch (e) {
-    console.error('加载总览大盘数据失败', e)
-  }
-}
-
-onMounted(() => {
-  loadData()
-})
-</script>
-
-<style scoped>
-.page-title-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 24px;
-}
-.page-title {
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--text-main);
-}
-.page-desc {
-  font-size: 13px;
-  color: var(--text-muted);
-  margin-top: 4px;
-}
-
-.kpi-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
-  margin-bottom: 24px;
-}
-.kpi-card {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 18px;
-}
-.kpi-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 24px;
-}
-.icon-indigo { background: #e0e7ff; color: #4338ca; }
-.icon-emerald { background: #d1fae5; color: #047857; }
-.icon-amber { background: #fef3c7; color: #b45309; }
-.icon-cyan { background: #cffafe; color: #0e7490; }
-
-.kpi-info {
-  display: flex;
-  flex-direction: column;
-}
-.kpi-label {
-  font-size: 12px;
-  color: var(--text-muted);
-  font-weight: 500;
-}
-.kpi-value {
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--text-main);
-  margin: 2px 0;
-}
-.kpi-trend {
-  font-size: 11px;
-  color: var(--text-light);
-}
-.trend-up {
-  color: var(--success);
-  font-weight: 600;
-}
-
-.content-grid {
-  display: grid;
-  grid-template-columns: 2fr 1fr;
-  gap: 20px;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
-.card-title {
-  font-size: 15px;
-  font-weight: 600;
-}
-.link-more {
-  font-size: 12px;
-  color: var(--primary);
-  text-decoration: none;
-  font-weight: 500;
-}
-
-.code-pill {
-  background: #f1f5f9;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-  color: #475569;
-}
-.node-pill {
-  background: #eef2ff;
-  color: #4f46e5;
-  padding: 2px 8px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.provider-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 14px;
-}
-.provider-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 12px;
-  background: #f8fafc;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-}
-.provider-name {
-  font-size: 13px;
-  font-weight: 600;
-  display: block;
-}
-.provider-type {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-.full-width {
-  width: 100%;
-}
-.mt-3 { margin-top: 12px; }
-.mt-4 { margin-top: 16px; }
-.text-sm { font-size: 13px; }
-</style>

@@ -1,211 +1,217 @@
+<script setup lang="ts">
+import { ref } from 'vue'
+import client from '@/api/client'
+import { useCollection } from '@/composables/useCollection'
+import { useUiStore } from '@/stores/ui'
+import { dateText, errorMessage } from '@/utils/format'
+import type { Batch, Sku, Task, ApiResponse } from '@/types'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import PageHeading from '@/components/ui/PageHeading.vue'
+import PageState from '@/components/ui/PageState.vue'
+import PaginationBar from '@/components/ui/PaginationBar.vue'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
+import AppDialog from '@/components/ui/AppDialog.vue'
+import SkuPicker from '@/components/ui/SkuPicker.vue'
+const list = useCollection<Batch>('/batches', 9),
+  ui = useUiStore(),
+  show = ref(false),
+  name = ref(''),
+  selected = ref<Sku[]>([]),
+  busy = ref(false),
+  error = ref('')
+const detailOpen = ref(false),
+  detail = ref<{ batch: Batch; tasks: Task[] } | null>(null),
+  detailLoading = ref(false),
+  detailError = ref(''),
+  detailId = ref('')
+let detailSequence = 0
+function open() {
+  name.value = ''
+  selected.value = []
+  error.value = ''
+  show.value = true
+}
+async function submit() {
+  if (busy.value) return
+  if (!name.value.trim() || !selected.value.length) {
+    error.value = '请填写批次名称并选择商品。'
+    return
+  }
+  busy.value = true
+  error.value = ''
+  try {
+    const response = await client.post<ApiResponse<{ batch_id: string }>>('/batches', {
+      name: name.value.trim(),
+      sku_ids: selected.value.map((sku) => sku.id),
+      config: {
+        language: 'en',
+        platform: 'amazon',
+        media_type: 'both',
+        max_retries: 2,
+      },
+    })
+    show.value = false
+    ui.notify('批次已创建')
+    void list.reload(true)
+    void loadDetail(response.data.data.batch_id)
+  } catch (cause) {
+    error.value = errorMessage(cause)
+  } finally {
+    busy.value = false
+  }
+}
+async function loadDetail(id: string) {
+  const seq = ++detailSequence
+  detailId.value = id
+  detailOpen.value = true
+  detailLoading.value = true
+  detailError.value = ''
+  try {
+    const response = await client.get<ApiResponse<{ batch: Batch; tasks: Task[] }>>(
+      `/batches/${id}`,
+    )
+    if (seq === detailSequence) detail.value = response.data.data
+  } catch (cause) {
+    if (seq === detailSequence) detailError.value = errorMessage(cause)
+  } finally {
+    if (seq === detailSequence) detailLoading.value = false
+  }
+}
+</script>
 <template>
-  <div class="batch-page">
-    <div class="page-title-row">
-      <div>
-        <h1 class="page-title">批次生成调度</h1>
-        <p class="page-desc">支持百款 SKU 矩阵式批量下发与多智能体集群高并发处理</p>
-      </div>
-      <div class="actions">
-        <button class="btn btn-primary" @click="showModal = true">+ 新建批量生成批次</button>
-      </div>
-    </div>
-
-    <!-- 批次列表 -->
-    <div class="batch-grid">
-      <div v-for="b in batches" :key="b.id" class="batch-card card">
-        <div class="batch-header">
-          <div>
-            <h3 class="batch-name">{{ b.name }}</h3>
-            <span class="text-xs text-muted">ID: {{ b.id }}</span>
-          </div>
-          <span :class="['badge', b.status === 'completed' ? 'badge-success' : 'badge-info']">
-            {{ b.status }}
-          </span>
+  <PageHeading title="批量任务" description="为一组商品安排完整内容创作，集中查看各任务进展。">
+    <button class="btn btn-primary" @click="open">
+      <AppIcon name="plus" :size="17" />
+      新建批次
+    </button>
+  </PageHeading>
+  <div class="section-toolbar">
+    <span class="subtle">按创建时间排列 · 每批最多 100 件商品</span>
+    <button class="btn btn-secondary btn-sm" :disabled="list.loading" @click="list.reload()">
+      <AppIcon name="refresh" :size="16" />
+      刷新
+    </button>
+  </div>
+  <PageState
+    :loading="list.loading"
+    :error="list.error"
+    :error-code="list.errorCode"
+    :empty="!list.items.length"
+    title="还没有批量任务"
+    description="为多件商品安排创作，也能保持井然有序。"
+    icon="grid"
+    @retry="list.reload()"
+  >
+    <template #action>
+      <button class="btn btn-primary" @click="open">创建第一个批次</button>
+    </template>
+    <div class="three-grid">
+      <article v-for="batch in list.items" :key="batch.id" class="card batch-card">
+        <div class="row between">
+          <span class="provider-mark"><AppIcon name="grid" /></span>
+          <StatusBadge :status="batch.status" />
         </div>
-
-        <div class="progress-wrap mt-3">
-          <div class="progress-meta">
-            <span>处理进度:</span>
-            <strong>{{ b.completed_count }} / {{ b.total_count }}</strong>
-          </div>
-          <div class="progress-track">
-            <div class="progress-bar" :style="{ width: `${b.total_count ? (b.completed_count/b.total_count)*100 : 0}%` }"></div>
-          </div>
-        </div>
-
-        <div class="batch-footer mt-4">
-          <span class="text-xs text-muted">创建时间: {{ b.create_time ? new Date(b.create_time).toLocaleString() : '-' }}</span>
-          <button class="btn btn-secondary btn-sm" @click="viewBatch(b.id)">查看批次详情</button>
-        </div>
-      </div>
-
-      <div v-if="batches.length === 0" class="empty-state card">
-        <p class="text-muted">暂无批次任务，可点击右上角创建批量任务</p>
-      </div>
-    </div>
-
-    <!-- 新建批次弹窗 -->
-    <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
-      <div class="modal-content">
-        <h3 class="modal-title mb-4">创建多商品批量生成批次</h3>
-        <div class="form-group">
-          <label class="form-label">批次名称</label>
-          <input type="text" v-model="batchName" class="form-input" placeholder="例如: 2026秋季露营装备全量出海" />
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">选择参与批量生成的 SKU (多选)</label>
-          <div class="sku-checkbox-list">
-            <label v-for="s in availableSkus" :key="s.id" class="sku-checkbox-item">
-              <input type="checkbox" :value="s.id" v-model="selectedSkus" />
-              <span>[{{ s.code }}] {{ s.name }}</span>
-            </label>
-          </div>
-        </div>
-
-        <div class="modal-footer mt-4">
-          <button class="btn btn-secondary" @click="showModal = false">取消</button>
-          <button class="btn btn-primary" @click="submitBatch" :disabled="submitting || !selectedSkus.length">
-            {{ submitting ? '下发中...' : `立即下发批次 (${selectedSkus.length}款SKU)` }}
+        <h2>{{ batch.name }}</h2>
+        <p class="card-description">{{ batch.total_count }} 件商品 · 完整内容生成</p>
+        <p class="subtle spaced">各任务的实际进展，请在批次详情查看。</p>
+        <div class="row between spaced wrap">
+          <span class="subtle">{{ dateText(batch.create_time) }}</span>
+          <button class="text-button" @click="loadDetail(batch.id)">
+            查看详情
+            <AppIcon name="arrow-right" :size="15" />
           </button>
         </div>
-      </div>
+      </article>
     </div>
-  </div>
+    <PaginationBar
+      :page="list.page"
+      :size="list.size"
+      :total="list.total"
+      :loading="list.loading"
+      @change="list.page = $event"
+    />
+  </PageState>
+  <AppDialog
+    v-model="show"
+    title="创建批量任务"
+    description="选择需要创作的真实商品，最多 100 件。"
+    :busy="busy"
+    wide
+  >
+    <form id="batch-form" @submit.prevent="submit">
+      <div class="field">
+        <label for="batch-name">批次名称</label>
+        <input
+          id="batch-name"
+          v-model="name"
+          class="input"
+          required
+          maxlength="128"
+          placeholder="例如：秋季新品内容创作"
+          :disabled="busy"
+        />
+      </div>
+      <div class="field">
+        <span class="field-label">选择商品 · 已选 {{ selected.length }} / 100</span>
+        <SkuPicker v-if="show" v-model="selected" multiple />
+      </div>
+      <div class="notice">
+        <AppIcon name="layers" />
+        <span>每件商品生成英文 Amazon 文案、图片与视频；审核未通过时最多重试 2 次。</span>
+      </div>
+      <p class="cost-note">
+        <AppIcon name="info" :size="16" />
+        创建批次会为所选商品调用模型，可能产生多笔生成费用。
+      </p>
+      <p v-if="error" class="form-error" role="alert">{{ error }}</p>
+    </form>
+    <template #footer>
+      <button class="btn btn-secondary" :disabled="busy" @click="show = false">取消</button>
+      <button
+        class="btn btn-primary"
+        form="batch-form"
+        type="submit"
+        :disabled="busy || !selected.length || !name.trim()"
+      >
+        <span v-if="busy" class="spinner" />
+        {{ busy ? '正在创建…' : `创建批次（${selected.length} 件）` }}
+      </button>
+    </template>
+  </AppDialog>
+  <AppDialog v-model="detailOpen" :title="detail?.batch.name || '批次详情'" drawer>
+    <PageState
+      :loading="detailLoading"
+      :error="detailError"
+      :empty="!detail"
+      @retry="loadDetail(detailId)"
+    >
+      <template v-if="detail">
+        <div class="batch-counts">
+          <div>
+            <span>任务总数</span>
+            <b>{{ detail.tasks.length }}</b>
+          </div>
+          <div>
+            <span>已完成</span>
+            <b>{{ detail.tasks.filter((task) => task.status === 'completed').length }}</b>
+          </div>
+          <div>
+            <span>失败</span>
+            <b>{{ detail.tasks.filter((task) => task.status === 'failed').length }}</b>
+          </div>
+        </div>
+        <div v-for="task in detail.tasks" :key="task.id" class="file-row">
+          <AppIcon name="layers" />
+          <span>
+            <span class="code-pill">{{ task.id }}</span>
+            <p class="subtle">商品：{{ task.sku_id }}</p>
+          </span>
+          <StatusBadge :status="task.status" />
+          <RouterLink :to="`/workbench/${task.id}`" class="text-button" @click="detailOpen = false">
+            打开任务
+          </RouterLink>
+        </div>
+      </template>
+    </PageState>
+  </AppDialog>
 </template>
-
-<script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import client from '@/api/client'
-
-const batches = ref<any[]>([])
-const availableSkus = ref<any[]>([])
-const showModal = ref(false)
-const batchName = ref('2026秋季户外系列出海批次')
-const selectedSkus = ref<string[]>([])
-const submitting = ref(false)
-
-async function loadBatches() {
-  try {
-    const res = await client.get('/batches')
-    batches.value = res.data?.data?.items || []
-  } catch (e) {
-    console.error(e)
-  }
-}
-
-async function loadSkus() {
-  try {
-    const res = await client.get('/skus')
-    availableSkus.value = res.data?.data?.items || []
-    if (availableSkus.value.length > 0) {
-      selectedSkus.value = availableSkus.value.map(s => s.id)
-    }
-  } catch (e) {
-    console.error(e)
-  }
-}
-
-async function submitBatch() {
-  if (!batchName.value || !selectedSkus.value.length) return
-  submitting.value = true
-  try {
-    await client.post('/batches', {
-      name: batchName.value,
-      sku_ids: selectedSkus.value,
-      config: { platform: 'amazon', language: 'en' }
-    })
-    showModal.value = false
-    alert('批次已成功下发至智能体集群！')
-    loadBatches()
-  } catch (e) {
-    alert('下发失败')
-  } finally {
-    submitting.value = false
-  }
-}
-
-function viewBatch(batchId: string) {
-  alert(`批次 ${batchId} 正在由后台多进程 Worker 持续调度`)
-}
-
-onMounted(() => {
-  loadBatches()
-  loadSkus()
-})
-</script>
-
-<style scoped>
-.page-title-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 24px;
-}
-.page-title { font-size: 22px; font-weight: 700; }
-.page-desc { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
-
-.batch-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 16px;
-}
-.batch-card {
-  padding: 18px;
-}
-.batch-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-}
-.batch-name { font-size: 16px; font-weight: 600; }
-.text-xs { font-size: 11px; }
-
-.progress-meta {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12.5px;
-  color: var(--text-muted);
-  margin-bottom: 6px;
-}
-.progress-track {
-  height: 8px;
-  background: #e2e8f0;
-  border-radius: 4px;
-  overflow: hidden;
-}
-.progress-bar {
-  height: 100%;
-  background: linear-gradient(90deg, #4f46e5, #06b6d4);
-  transition: width 0.3s ease;
-}
-
-.batch-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.sku-checkbox-list {
-  max-height: 160px;
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.sku-checkbox-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  cursor: pointer;
-}
-.empty-state {
-  grid-column: 1 / -1;
-  text-align: center;
-  padding: 40px;
-}
-</style>

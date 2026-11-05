@@ -1,146 +1,159 @@
-<template>
-  <div class="listing-page">
-    <div class="page-title-row">
-      <div>
-        <h1 class="page-title">跨境多平台刊登发布</h1>
-        <p class="page-desc">将通过质检的完整商品物料一键同步推送到 Amazon、Shopify 与 TikTok Shop 线上店铺</p>
-      </div>
-      <div class="actions">
-        <button class="btn btn-primary" @click="showModal = true">+ 发起跨平台刊登</button>
-      </div>
-    </div>
-
-    <!-- 刊登历史记录 -->
-    <div class="card">
-      <div class="table-container">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>刊登 ID</th>
-              <th>商品 SKU</th>
-              <th>目标平台</th>
-              <th>外部平台商品 ID</th>
-              <th>状态</th>
-              <th>刊登时间</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="l in listings" :key="l.id">
-              <td><code class="code-pill">{{ l.id }}</code></td>
-              <td><strong>{{ l.sku_name }}</strong></td>
-              <td><span class="badge badge-info">{{ l.platform.toUpperCase() }}</span></td>
-              <td><code>{{ l.listing_data?.external_product_id || '-' }}</code></td>
-              <td><span class="badge badge-success">{{ l.status }}</span></td>
-              <td>{{ l.create_time ? new Date(l.create_time).toLocaleString() : '-' }}</td>
-            </tr>
-            <tr v-if="listings.length === 0">
-              <td colspan="6" class="text-center text-muted p-4">暂无刊登记录，可点击右上角发起商品上架</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- 刊登弹窗 -->
-    <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
-      <div class="modal-content">
-        <h3 class="modal-title mb-4">发起跨平台刊登上架</h3>
-        <div class="form-group">
-          <label class="form-label">选择要上架的商品 SKU</label>
-          <select v-model="selectedSkuId" class="form-select">
-            <option v-for="s in skus" :key="s.id" :value="s.id">
-              [{{ s.code }}] {{ s.name }}
-            </option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">目标刊登平台</label>
-          <select v-model="targetPlatform" class="form-select">
-            <option value="amazon">Amazon 亚马逊北美站</option>
-            <option value="shopify">Shopify 品牌独立站</option>
-            <option value="tiktok">TikTok Shop 美区小店</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">建议零售价 (USD)</label>
-          <input type="text" v-model="price" class="form-input" placeholder="49.99" />
-        </div>
-        <div class="modal-footer mt-4">
-          <button class="btn btn-secondary" @click="showModal = false">取消</button>
-          <button class="btn btn-primary" @click="submitListing" :disabled="submitting">
-            {{ submitting ? '同步中...' : '立即同步刊登' }}
-          </button>
-        </div>
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import client from '@/api/client'
-
-const listings = ref<any[]>([])
-const skus = ref<any[]>([])
-const showModal = ref(false)
-const selectedSkuId = ref('')
-const targetPlatform = ref('amazon')
-const price = ref('49.99')
-const submitting = ref(false)
-
-async function loadListings() {
-  try {
-    const res = await client.get('/listings')
-    listings.value = res.data?.data?.items || []
-  } catch (e) {
-    console.error(e)
-  }
+import { ref } from 'vue'
+import { useCollection } from '@/composables/useCollection'
+import { dateText, outputText, platformText } from '@/utils/format'
+import type { Listing } from '@/types'
+import PageHeading from '@/components/ui/PageHeading.vue'
+import PageState from '@/components/ui/PageState.vue'
+import PaginationBar from '@/components/ui/PaginationBar.vue'
+import AppDialog from '@/components/ui/AppDialog.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+const list = useCollection<Listing>('/listings', 10, { platform: '' }),
+  selected = ref<Listing | null>(null),
+  open = ref(false)
+const platforms = [
+  {
+    name: 'Amazon',
+    mark: 'a',
+    description: '准备英文商品文案、主图与商品展示视频。',
+  },
+  {
+    name: 'Shopify',
+    mark: 's',
+    description: '未来可将品牌内容用于独立站商品页面。',
+  },
+  {
+    name: 'TikTok',
+    mark: 't',
+    description: '未来可将视频素材用于内容电商场景。',
+  },
+]
+function viewRecord(record: Listing) {
+  selected.value = record
+  open.value = true
 }
-
-async function loadSkus() {
-  try {
-    const res = await client.get('/skus')
-    skus.value = res.data?.data?.items || []
-    if (skus.value.length) selectedSkuId.value = skus.value[0].id
-  } catch (e) {
-    console.error(e)
-  }
-}
-
-async function submitListing() {
-  if (!selectedSkuId.value) return
-  submitting.value = true
-  try {
-    await client.post('/listings', {
-      sku_id: selectedSkuId.value,
-      platform: targetPlatform.value,
-      listing_data: { price: price.value }
-    })
-    showModal.value = false
-    alert(`商品已成功同步刊登至 ${targetPlatform.value}！`)
-    loadListings()
-  } catch (e) {
-    alert('刊登失败')
-  } finally {
-    submitting.value = false
-  }
-}
-
-onMounted(() => {
-  loadListings()
-  loadSkus()
-})
 </script>
-
-<style scoped>
-.page-title-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 24px;
-}
-.page-title { font-size: 22px; font-weight: 700; }
-.page-desc { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
-.modal-footer { display: flex; justify-content: flex-end; gap: 12px; }
-.code-pill { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
-</style>
+<template>
+  <PageHeading
+    title="刊登准备"
+    description="在内容与渠道之间，做好最后一步准备。"
+    eyebrow="PUBLISHING PREPARATION"
+  >
+    <button class="btn btn-primary" disabled>
+      <AppIcon name="globe" :size="17" />
+      发布到平台 · 尚未开放
+    </button>
+  </PageHeading>
+  <div class="three-grid mb-5">
+    <article v-for="platform in platforms" :key="platform.name" class="card platform-card">
+      <div class="row between">
+        <span class="provider-mark">{{ platform.mark }}</span>
+        <span class="badge badge-neutral">接入筹备中</span>
+      </div>
+      <h3>{{ platform.name }}</h3>
+      <p>{{ platform.description }}</p>
+    </article>
+  </div>
+  <div class="notice notice-warning mb-5">
+    <AppIcon name="info" :size="18" />
+    <span>
+      当前没有接通平台发布接口，下方仅保留已有本地记录。记录中的外部标识不代表已上架，请在平台后台核实。
+    </span>
+  </div>
+  <div class="toolbar">
+    <div class="filter-group">
+      <label for="listing-platform">目标平台</label>
+      <select
+        id="listing-platform"
+        v-model="list.params.platform"
+        class="form-select"
+        @change="list.reload(true)"
+      >
+        <option value="">全部平台</option>
+        <option value="amazon">Amazon</option>
+        <option value="shopify">Shopify</option>
+        <option value="tiktok">TikTok</option>
+      </select>
+    </div>
+    <button class="btn btn-secondary" :disabled="list.loading" @click="list.reload()">
+      <AppIcon name="refresh" :size="16" />
+      刷新记录
+    </button>
+  </div>
+  <PageState
+    :loading="list.loading"
+    :error="list.error"
+    :error-code="list.errorCode"
+    :empty="!list.items.length"
+    title="暂无本地刊登记录"
+    description="真实平台发布能力尚未开放，可先在交付中心核对内容。"
+    icon="globe"
+    @retry="list.reload()"
+  >
+    <div class="panel table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>商品</th>
+            <th>目标平台</th>
+            <th>记录状态</th>
+            <th>登记时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="item in list.items" :key="item.id">
+            <td>
+              <strong>{{ item.sku_name || '未命名商品' }}</strong>
+              <small>{{ item.sku_code }}</small>
+            </td>
+            <td>{{ platformText(item.platform) }}</td>
+            <td><span class="badge badge-neutral">已登记（本地记录）</span></td>
+            <td>{{ dateText(item.create_time) }}</td>
+            <td>
+              <button class="text-button" @click="viewRecord(item)">
+                查看记录
+                <AppIcon name="arrow-right" :size="14" />
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </PageState>
+  <PaginationBar
+    :page="list.page"
+    @change="list.page = $event"
+    :total="list.total"
+    :size="list.size"
+    :loading="list.loading"
+    :has-more="list.hasMore"
+  />
+  <AppDialog v-model="open" title="本地刊登记录" drawer>
+    <template v-if="selected">
+      <p class="notice notice-warning">此记录未验证平台上架状态。</p>
+      <dl class="details-list mt-5">
+        <div>
+          <dt>商品</dt>
+          <dd>{{ selected.sku_name || '—' }}</dd>
+        </div>
+        <div>
+          <dt>目标平台</dt>
+          <dd>{{ platformText(selected.platform) }}</dd>
+        </div>
+        <div>
+          <dt>记录时间</dt>
+          <dd>{{ dateText(selected.create_time) }}</dd>
+        </div>
+        <div>
+          <dt>记录 ID</dt>
+          <dd>{{ selected.id }}</dd>
+        </div>
+      </dl>
+      <details class="details-toggle">
+        <summary>查看原始登记内容</summary>
+        <pre class="detail-json">{{ outputText(selected.listing_data) }}</pre>
+      </details>
+    </template>
+  </AppDialog>
+</template>

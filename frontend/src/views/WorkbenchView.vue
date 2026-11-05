@@ -1,650 +1,378 @@
-<template>
-  <div class="workbench-page">
-    <!-- 顶部任务状态栏 -->
-    <div class="workbench-header card">
-      <div class="header-left">
-        <router-link to="/tasks" class="back-link">← 返回任务列表</router-link>
-        <div class="task-title-wrap">
-          <h2 class="task-name">{{ taskData.sku_name || '智能体生成工作台' }}</h2>
-          <span class="sku-tag">SKU: {{ taskData.sku_code || taskData.sku_id }}</span>
-          <span :class="['badge', taskData.status === 'completed' ? 'badge-success' : 'badge-info']">
-            {{ taskData.status }}
-          </span>
-        </div>
-      </div>
-      <div class="header-right">
-        <button class="btn btn-secondary btn-sm" @click="fetchTaskDetail">🔄 刷新状态</button>
-        <button class="btn btn-primary btn-sm" @click="retryWorkflow">⚡ 重新触发 P-E-V 流水线</button>
-      </div>
-    </div>
-
-    <!-- 7-Agent DAG 实时交互拓扑图 -->
-    <div class="dag-container card mt-4">
-      <div class="dag-header">
-        <h3 class="card-title">7-Agent 实时编排拓扑 (P-E-V 闭环工作流)</h3>
-        <span class="dag-legend">点击节点可查看历史 Prompt 输入、输出快照与 Token 消耗</span>
-      </div>
-
-      <div class="dag-flow">
-        <div 
-          v-for="(node, idx) in agentNodes" 
-          :key="node.key"
-          :class="['dag-node', getNodeStatusClass(node.key), activeNodeKey === node.key ? 'node-selected' : '']"
-          @click="selectNode(node.key)"
-        >
-          <div class="node-badge-idx">{{ idx + 1 }}</div>
-          <div class="node-icon">{{ node.icon }}</div>
-          <div class="node-info">
-            <span class="node-label">{{ node.name }}</span>
-            <span class="node-sub">{{ node.desc }}</span>
-          </div>
-          <span class="node-status-indicator"></span>
-        </div>
-      </div>
-    </div>
-
-    <!-- 节点运行明细抽屉 / 弹层 -->
-    <div v-if="selectedNodeRun" class="node-detail-banner card mt-3">
-      <div class="banner-header">
-        <h4>⚡ 节点执行明细快照: {{ selectedNodeRun.node_name }}</h4>
-        <button class="close-btn" @click="selectedNodeRun = null">✕</button>
-      </div>
-      <div class="banner-metrics">
-        <span>执行耗时: <strong>{{ selectedNodeRun.elapsed_ms }} ms</strong></span>
-        <span>消耗 Tokens: <strong>{{ (selectedNodeRun.prompt_tokens || 0) + (selectedNodeRun.completion_tokens || 0) }}</strong></span>
-        <span>模型费用: <strong>${{ selectedNodeRun.cost }}</strong></span>
-        <span>状态: <span class="badge badge-success">{{ selectedNodeRun.status }}</span></span>
-      </div>
-      <div class="banner-content mt-2">
-        <pre class="json-code">{{ JSON.stringify(selectedNodeRun.output_data, null, 2) }}</pre>
-      </div>
-    </div>
-
-    <!-- 生成物料产出区 (文案 + 图像 + 视频 + 质检) -->
-    <div class="workspace-grid mt-4">
-      <!-- 左列：出海高转化文案与合规质检 -->
-      <div class="left-col">
-        <!-- 文案卡片 -->
-        <div class="card copy-card">
-          <div class="card-header">
-            <h3 class="card-title">✍️ 亚马逊标准高转化英文文案</h3>
-            <button class="btn btn-secondary btn-sm" @click="copyAllText">复制全文</button>
-          </div>
-
-          <div v-if="copyData" class="copy-body">
-            <div class="copy-field">
-              <label class="field-label">Listing 核心大卖标题 (Title)</label>
-              <div class="field-box">{{ copyData.title }}</div>
-            </div>
-
-            <div class="copy-field mt-3">
-              <label class="field-label">五点描述 (Five Bullets)</label>
-              <ul class="bullets-list">
-                <li v-for="(b, i) in copyData.bullets" :key="i" class="bullet-item">
-                  {{ b }}
-                </li>
-              </ul>
-            </div>
-
-            <div class="copy-field mt-3">
-              <label class="field-label">SEO 搜索关键词 (Keywords)</label>
-              <div class="keywords-wrap">
-                <span v-for="(k, i) in copyData.keywords" :key="i" class="keyword-pill"># {{ k }}</span>
-              </div>
-            </div>
-          </div>
-          <div v-else class="empty-hint">文案智能体策划中...</div>
-        </div>
-
-        <!-- 质检报告卡片 -->
-        <div class="card compliance-card mt-4">
-          <div class="card-header">
-            <h3 class="card-title">🛡️ 质检与合规评估报告 (Quality Review)</h3>
-            <span v-if="complianceData" :class="['badge', complianceData.passed ? 'badge-success' : 'badge-danger']">
-              {{ complianceData.passed ? '通过 (PASSED)' : '未通过 (RETRY)' }}
-            </span>
-          </div>
-
-          <div v-if="complianceData" class="compliance-body">
-            <div class="score-display">
-              <div class="score-num">{{ complianceData.score }}</div>
-              <div class="score-meta">
-                <span class="score-title">综合合规质检得分</span>
-                <span class="score-desc">达标线 85.0 分，低于阈值触发自动回退重试</span>
-              </div>
-            </div>
-
-            <div class="dimensions-grid mt-3">
-              <div v-for="(val, key) in complianceData.dimensions" :key="key" class="dim-box">
-                <span class="dim-name">{{ key }}</span>
-                <span class="dim-score">{{ val }}分</span>
-              </div>
-            </div>
-
-            <div class="suggestions-box mt-3" v-if="complianceData.suggestions?.length">
-              <div class="sugg-title">智能体优化建议:</div>
-              <ul class="sugg-list">
-                <li v-for="(s, idx) in complianceData.suggestions" :key="idx">{{ s }}</li>
-              </ul>
-            </div>
-          </div>
-          <div v-else class="empty-hint">等待审核智能体验收...</div>
-        </div>
-      </div>
-
-      <!-- 右列：Wanx 视觉图像素材与 Kling 视频画廊 -->
-      <div class="right-col">
-        <!-- 图像素材 -->
-        <div class="card assets-card">
-          <div class="card-header">
-            <h3 class="card-title">🎨 万相 2.1 多视角高清商品图 ({{ imageAssets.length }} 张)</h3>
-          </div>
-          <div class="image-gallery">
-            <div v-for="img in imageAssets" :key="img.id" class="image-card">
-              <img :src="img.url" :alt="img.sub_type" class="product-thumb" />
-              <div class="image-overlay">
-                <span class="image-tag">{{ img.sub_type }}</span>
-                <a :href="img.url" target="_blank" class="zoom-btn">🔍 原图</a>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 视频素材 -->
-        <div class="card video-card mt-4">
-          <div class="card-header">
-            <h3 class="card-title">🎬 可灵 Kling AI 动态带货短视频</h3>
-            <span v-if="videoAsset" class="badge badge-success">5秒 16:9 HD</span>
-          </div>
-          <div v-if="videoAsset" class="video-container">
-            <video :src="videoAsset.url" controls class="video-player"></video>
-            <div class="video-meta mt-2 text-sm text-muted">
-              <span>模型: Kling-V1</span> |
-              <span>用于独立站 / TikTok 商品卡展示</span>
-            </div>
-          </div>
-          <div v-else class="empty-hint">视频智能体渲染中...</div>
-        </div>
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import client from '@/api/client'
-
-const route = useRoute()
-const taskId = computed(() => (route.params.taskId as string) || '')
-
-const taskData = ref<any>({})
-const copyData = ref<any>(null)
-const assetsData = ref<any[]>([])
-const complianceData = ref<any>(null)
-const nodeRuns = ref<any[]>([])
-const activeNodeKey = ref<string>('')
-const selectedNodeRun = ref<any>(null)
-
-// 计时器相关
-const runningElapsedMs = ref(0)
-let timerInterval: any = null
-
-let ws: WebSocket | null = null
-let heartbeat: ReturnType<typeof setInterval> | null = null
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-let disposed = false
-
-const agentNodes = [
-  { key: 'orchestrator', name: '总控调度', desc: '全局编排与SKU挂载', icon: '🧭' },
-  { key: 'requirement_analyzer', name: '需求分析', desc: 'RAG知识与客群画像', icon: '🔍' },
-  { key: 'creative_planner', name: '创意策划', desc: '高转化五点与标题', icon: '✍️' },
-  { key: 'visual_designer', name: '视觉设计', desc: '分镜规划与Prompt拆解', icon: '📐' },
-  { key: 'image_generator', name: '图片生成', desc: '万相2.1多视角生成', icon: '🎨' },
-  { key: 'video_generator', name: '视频生成', desc: '可灵AI短视频渲染', icon: '🎬' },
-  { key: 'quality_reviewer', name: '质量审核', desc: 'P-E-V闭环与合规打分', icon: '🛡️' },
+import { useTaskWorkspace } from '@/composables/useTaskWorkspace'
+import { useUiStore } from '@/stores/ui'
+import { dateText, errorMessage, fullCopy, moneyText, outputText } from '@/utils/format'
+import PageHeading from '@/components/ui/PageHeading.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import PageState from '@/components/ui/PageState.vue'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
+import AppDialog from '@/components/ui/AppDialog.vue'
+import MediaPreview from '@/components/ui/MediaPreview.vue'
+import ReviewResult from '@/components/ui/ReviewResult.vue'
+const route = useRoute(),
+  ui = useUiStore(),
+  taskId = computed(() => String(route.params.taskId || ''))
+const {
+  detail,
+  nodes,
+  latest,
+  loading,
+  refreshing,
+  error,
+  errorCode,
+  connection,
+  running,
+  refresh,
+  reconnectNow,
+} = useTaskWorkspace(taskId)
+const tab = ref('copy'),
+  drawer = ref(false),
+  selected = ref(''),
+  retrying = ref(false)
+const steps = [
+  { key: 'orchestrator', name: '任务准备' },
+  { key: 'requirement_analyzer', name: '需求分析' },
+  { key: 'creative_planner', name: '文案创作' },
+  { key: 'visual_designer', name: '视觉设计' },
+  { key: 'image_generator', name: '图片生成' },
+  { key: 'video_generator', name: '视频生成' },
+  { key: 'quality_reviewer', name: '质量审核' },
 ]
-
-const imageAssets = computed(() => assetsData.value.filter(a => a.type === 'image'))
-const videoAsset = computed(() => assetsData.value.find(a => a.type === 'video'))
-
-function getNodeStatusClass(nodeKey: string) {
-  const run = nodeRuns.value.find(r => r.node_name === nodeKey)
-  if (!run) return 'node-pending'
-  return run.status === 'success' ? 'node-success' : 'node-running'
-}
-
-function selectNode(nodeKey: string) {
-  activeNodeKey.value = nodeKey
-  selectedNodeRun.value = nodeRuns.value.find(r => r.node_name === nodeKey) || null
-}
-
-async function fetchTaskDetail() {
-  if (!taskId.value) return
-  try {
-    const res = await client.get(`/tasks/${taskId.value}`)
-    const data = res.data?.data || {}
-    taskData.value = data.task || {}
-    copyData.value = data.copy
-    assetsData.value = data.assets || []
-    complianceData.value = data.compliance_report
-
-    const nodesRes = await client.get(`/tasks/${taskId.value}/nodes`)
-    nodeRuns.value = nodesRes.data?.data?.items || []
-  } catch (e) {
-    console.error('加载任务详情失败', e)
-  }
-}
-
-async function retryWorkflow() {
-  if (!taskId.value) return
+const history = computed(() =>
+  nodes.value
+    .filter((node) => node.node_name === selected.value)
+    .slice()
+    .reverse(),
+)
+const selectedName = computed(
+  () => steps.find((step) => step.key === selected.value)?.name || '节点详情',
+)
+const imageAssets = computed(
+    () => detail.value?.assets.filter((asset) => asset.type === 'image') || [],
+  ),
+  videoAssets = computed(() => detail.value?.assets.filter((asset) => asset.type === 'video') || [])
+const completed = computed(
+  () => Object.values(latest.value).filter((node) => node.status === 'success').length,
+)
+const reviewReport = computed(() =>
+  detail.value?.compliance_report
+    ? {
+        ...detail.value.compliance_report,
+        status:
+          detail.value.task.status === 'review_required'
+            ? 'outdated'
+            : detail.value.compliance_report.status,
+      }
+    : null,
+)
+async function retry() {
+  if (retrying.value || running.value) return
+  if (
+    !(await ui.confirm(
+      '重新执行这个任务',
+      '将从头执行完整生成，可能覆盖手工编辑的文案，并再次产生模型费用。',
+      '重新生成',
+    ))
+  )
+    return
+  retrying.value = true
   try {
     await client.post(`/tasks/${taskId.value}/run`)
-    alert('已重新下发 7-Agent 工作流，系统正在后台流转！')
-    setTimeout(fetchTaskDetail, 2000)
-  } catch (e) {
-    alert('重新下发失败')
+    ui.notify('已重新创建执行请求')
+    await refresh()
+    reconnectNow()
+  } catch (cause) {
+    ui.notify(errorMessage(cause), 'error')
+  } finally {
+    retrying.value = false
   }
 }
-
-function copyAllText() {
-  if (!copyData.value) return
-  const fullText = `TITLE:\n${copyData.value.title}\n\nBULLETS:\n${copyData.value.bullets?.join('\n')}\n\nKEYWORDS:\n${copyData.value.keywords?.join(', ')}`
-  navigator.clipboard.writeText(fullText)
-  alert('文案已成功复制到剪贴板！')
+function openNode(key: string) {
+  selected.value = key
+  drawer.value = true
 }
-
-// WebSocket 实时连接
-function initWebSocket() {
-  if (!taskId.value) return
-  
-  // 假设后端 ws 挂载在同样主机的 /ws/tasks/:taskId 上 (或走 vite proxy)
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  // 通过 VITE 代理或直接拼接
-  const wsUrl = `${protocol}//${window.location.host}/api/v1/ws/tasks/${taskId.value}`
-  
-  ws = new WebSocket(wsUrl)
-  ws.onopen = () => {
-    ws?.send(JSON.stringify({ type: 'authenticate', token: localStorage.getItem('token') || '' }))
-  }
-  ws.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data)
-      if (data.type === 'authenticated') {
-        fetchTaskDetail()
-        if (heartbeat) clearInterval(heartbeat)
-        heartbeat = setInterval(() => {
-          if (ws?.readyState === WebSocket.OPEN) ws.send('ping')
-        }, 25000)
-      } else if (data.type === 'node_update') {
-        const payload = data.payload
-        // 更新或插入 nodeRuns
-        const idx = nodeRuns.value.findIndex(r => r.node_name === payload.node_name)
-        if (idx !== -1) {
-          nodeRuns.value[idx] = { ...nodeRuns.value[idx], ...payload }
-        } else {
-          nodeRuns.value.push(payload)
-        }
-        
-        // 如果当前展开的正好是这个节点，更新它
-        if (activeNodeKey.value === payload.node_name) {
-          selectedNodeRun.value = nodeRuns.value.find(r => r.node_name === payload.node_name)
-        }
-        
-        // 当收到任务更新时，如果是资产生成完毕，刷新一次整体接口以拿到图片/文案
-        if (payload.status === 'success') {
-          fetchTaskDetail()
-        }
-      } else if (data.type === 'task_update') {
-        if (data.payload.status) {
-          taskData.value.status = data.payload.status
-        }
-        if (data.payload.current_node) {
-          taskData.value.current_node = data.payload.current_node
-        }
-      }
-    } catch(e) {
-      console.error('解析 WS 消息失败', e)
-    }
-  }
-  
-  ws.onclose = (event) => {
-    if (heartbeat) clearInterval(heartbeat)
-    heartbeat = null
-    if (!disposed && ![4401, 4403, 4404].includes(event.code)) {
-      reconnectTimer = setTimeout(initWebSocket, 3000)
-    }
-  }
-}
-
-// 本地计时器，为正在运行的节点累加耗时，给用户 "没有卡死" 的视觉反馈
-function startTimer() {
-  timerInterval = setInterval(() => {
-    runningElapsedMs.value += 1000
-    
-    // 自动更新所有状态为 running 的节点耗时
-    nodeRuns.value.forEach(r => {
-      if (r.status === 'running') {
-        if (!r.elapsed_ms) r.elapsed_ms = 0
-        r.elapsed_ms += 1000
-      }
-    })
-    
-    if (selectedNodeRun.value && selectedNodeRun.value.status === 'running') {
-      selectedNodeRun.value.elapsed_ms = (selectedNodeRun.value.elapsed_ms || 0)
-    }
-  }, 1000)
-}
-
-onMounted(() => {
-  fetchTaskDetail()
-  initWebSocket()
-  startTimer()
-})
-
-onUnmounted(() => {
-  disposed = true
-  if (heartbeat) clearInterval(heartbeat)
-  if (reconnectTimer) clearTimeout(reconnectTimer)
-  if (ws) ws.close()
-  if (timerInterval) clearInterval(timerInterval)
-})
 </script>
-
-<style scoped>
-.workbench-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px 20px;
-}
-.back-link {
-  font-size: 12px;
-  color: var(--primary);
-  text-decoration: none;
-  font-weight: 500;
-  display: block;
-  margin-bottom: 4px;
-}
-.task-title-wrap {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.task-name {
-  font-size: 18px;
-  font-weight: 700;
-}
-.sku-tag {
-  background: #f1f5f9;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  color: #475569;
-}
-
-.dag-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
-.dag-legend {
-  font-size: 12px;
-  color: var(--text-light);
-}
-
-.dag-flow {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  overflow-x: auto;
-  padding-bottom: 8px;
-}
-.dag-node {
-  flex: 1;
-  min-width: 140px;
-  background: #f8fafc;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 12px;
-  position: relative;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-.dag-node:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-sm);
-}
-.node-selected {
-  border-color: var(--primary) !important;
-  box-shadow: 0 0 0 2px var(--primary-glow) !important;
-}
-.node-badge-idx {
-  position: absolute;
-  top: 6px;
-  right: 8px;
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--text-light);
-}
-.node-icon {
-  font-size: 20px;
-  margin-bottom: 4px;
-}
-.node-label {
-  display: block;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-main);
-}
-.node-sub {
-  font-size: 10.5px;
-  color: var(--text-muted);
-}
-.node-success {
-  border-color: #a7f3d0;
-  background: #ecfdf5;
-}
-.node-running {
-  border-color: #93c5fd;
-  background: #eff6ff;
-}
-.node-pending {
-  opacity: 0.6;
-}
-
-.node-detail-banner {
-  background: #1e293b;
-  color: #f8fafc;
-  padding: 16px;
-}
-.banner-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.close-btn {
-  background: none;
-  border: none;
-  color: #94a3b8;
-  font-size: 16px;
-  cursor: pointer;
-}
-.banner-metrics {
-  display: flex;
-  gap: 20px;
-  font-size: 13px;
-  margin-top: 8px;
-  color: #cbd5e1;
-}
-.json-code {
-  background: #0f172a;
-  padding: 12px;
-  border-radius: 6px;
-  font-size: 12px;
-  color: #38bdf8;
-  max-height: 200px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-}
-
-.workspace-grid {
-  display: grid;
-  grid-template-columns: 1.2fr 1fr;
-  gap: 20px;
-}
-
-.field-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-  margin-bottom: 4px;
-  display: block;
-}
-.field-box {
-  background: #f8fafc;
-  padding: 10px 14px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  font-size: 14px;
-  font-weight: 500;
-}
-.bullets-list {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.bullet-item {
-  background: #f8fafc;
-  padding: 8px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  font-size: 13px;
-}
-.keywords-wrap {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.keyword-pill {
-  background: #eef2ff;
-  color: var(--primary);
-  font-size: 12px;
-  padding: 3px 8px;
-  border-radius: 4px;
-  font-weight: 500;
-}
-
-.score-display {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  background: #ecfdf5;
-  padding: 14px 18px;
-  border-radius: 10px;
-}
-.score-num {
-  font-size: 32px;
-  font-weight: 800;
-  color: #047857;
-}
-.score-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #065f46;
-  display: block;
-}
-.score-desc {
-  font-size: 12px;
-  color: #047857;
-}
-.dimensions-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
-}
-.dim-box {
-  display: flex;
-  justify-content: space-between;
-  padding: 8px 12px;
-  background: #f8fafc;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 12.5px;
-}
-.dim-name { color: var(--text-muted); }
-.dim-score { font-weight: 700; color: var(--primary); }
-
-.sugg-title {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text-main);
-  margin-bottom: 4px;
-}
-.sugg-list {
-  font-size: 12.5px;
-  color: #475569;
-  padding-left: 18px;
-}
-
-.image-gallery {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-  margin-top: 12px;
-}
-.image-card {
-  position: relative;
-  border-radius: 8px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  aspect-ratio: 1;
-}
-.product-thumb {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.image-overlay {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: rgba(15, 23, 42, 0.7);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 4px 8px;
-}
-.image-tag {
-  color: #fff;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-}
-.zoom-btn {
-  color: #38bdf8;
-  font-size: 11px;
-  text-decoration: none;
-}
-
-.video-container {
-  margin-top: 12px;
-}
-.video-player {
-  width: 100%;
-  border-radius: 8px;
-  background: #000;
-  max-height: 240px;
-}
-
-.empty-hint {
-  text-align: center;
-  padding: 30px;
-  color: var(--text-light);
-  font-size: 13px;
-}
-</style>
+<template>
+  <PageHeading
+    title="生成工作台"
+    :description="detail?.task.sku_name || '查看每一步创作进展与真实产物。'"
+    eyebrow="让每一步创作，都清晰可见"
+  >
+    <RouterLink to="/tasks" class="btn btn-secondary">
+      <AppIcon name="arrow-left" :size="17" />
+      返回任务
+    </RouterLink>
+  </PageHeading>
+  <PageState
+    :loading="loading"
+    :error-code="errorCode"
+    :error="!detail ? error : ''"
+    :empty="!detail"
+    title="没有找到任务"
+    @retry="refresh"
+  >
+    <template v-if="detail">
+      <div v-if="error" class="notice notice-warning" role="alert">
+        <AppIcon name="warning" />
+        <span>{{ error }} 当前展示上次成功获取的内容。</span>
+        <button class="text-button" @click="refresh">重新加载</button>
+      </div>
+      <div class="workbench-summary">
+        <div class="row wrap">
+          <StatusBadge :status="detail.task.status" />
+          <span class="code-pill">{{ detail.task.sku_code || detail.task.id }}</span>
+          <span class="subtle">创建于 {{ dateText(detail.task.create_time) }}</span>
+        </div>
+        <div class="row wrap">
+          <span class="connection-status">
+            <AppIcon name="wifi" :size="16" />
+            {{ connection }}
+          </span>
+          <button
+            v-if="!['实时连接正常', '正在连接', '正在重新连接'].includes(connection)"
+            class="text-button"
+            @click="reconnectNow"
+          >
+            重新连接
+          </button>
+          <button class="icon-button" aria-label="刷新任务" :disabled="refreshing" @click="refresh">
+            <AppIcon name="refresh" :size="17" />
+          </button>
+          <button
+            v-if="['failed', 'review_required'].includes(detail.task.status)"
+            class="btn btn-secondary btn-sm"
+            :disabled="retrying"
+            @click="retry"
+          >
+            <span v-if="retrying" class="spinner" />
+            重新生成
+          </button>
+        </div>
+      </div>
+      <div v-if="detail.task.status === 'failed'" class="notice notice-danger">
+        <AppIcon name="warning" />
+        <span>任务执行失败。请查看失败节点的执行记录，检查模型配置或重试。</span>
+      </div>
+      <div v-if="detail.task.status === 'review_required'" class="notice notice-warning">
+        <AppIcon name="info" />
+        <span>
+          文案修改后，旧审核已失效。当前只支持完整重新生成，可能覆盖手工编辑的文案并产生费用。
+        </span>
+      </div>
+      <div v-if="running" class="notice">
+        <AppIcon name="clock" />
+        <span>
+          创作仍在执行中，已记录 {{ completed }} / 7
+          个节点完成状态。图片与视频生成可能需要较长时间。
+        </span>
+      </div>
+      <div class="workbench-layout">
+        <aside class="node-list">
+          <h2>创作流程</h2>
+          <button
+            v-for="(step, index) in steps"
+            :key="step.key"
+            class="node-button"
+            :class="{
+              'node-complete': latest[step.key]?.status === 'success',
+              'node-failed': latest[step.key]?.status === 'failed',
+            }"
+            @click="openNode(step.key)"
+          >
+            <span>
+              <AppIcon v-if="latest[step.key]?.status === 'success'" name="check" :size="15" />
+              <AppIcon v-else-if="latest[step.key]?.status === 'failed'" name="close" :size="15" />
+              <template v-else>{{ index + 1 }}</template>
+            </span>
+            <span>
+              <strong>{{ step.name }}</strong>
+              <small>
+                {{
+                  latest[step.key]
+                    ? `${latest[step.key].elapsed_ms || 0} ms · 查看记录`
+                    : '暂无执行记录'
+                }}
+              </small>
+            </span>
+            <AppIcon name="chevron-right" :size="14" />
+          </button>
+        </aside>
+        <section class="panel">
+          <div class="result-tabs" role="tablist" aria-label="生成产物">
+            <button
+              v-for="item in [
+                { key: 'copy', name: '文案', icon: 'file' },
+                { key: 'images', name: '图片', icon: 'image' },
+                { key: 'videos', name: '视频', icon: 'video' },
+                { key: 'review', name: '审核', icon: 'shield' },
+              ]"
+              :key="item.key"
+              role="tab"
+              :aria-selected="tab === item.key"
+              :class="{ active: tab === item.key }"
+              @click="tab = item.key"
+            >
+              <AppIcon :name="item.icon" :size="16" />
+              {{ item.name }}
+            </button>
+          </div>
+          <div class="result-body" role="tabpanel">
+            <template v-if="tab === 'copy'">
+              <template v-if="detail.copy">
+                <div class="row between wrap">
+                  <span class="tag">英文文案</span>
+                  <button class="text-button" @click="ui.copy(fullCopy(detail.copy))">
+                    <AppIcon name="copy" :size="16" />
+                    复制文案
+                  </button>
+                </div>
+                <h2 class="spaced">{{ detail.copy.title }}</h2>
+                <h3>核心卖点</h3>
+                <ul class="bullets">
+                  <li v-for="(bullet, index) in detail.copy.bullets" :key="index">
+                    {{ bullet }}
+                  </li>
+                </ul>
+                <h3>商品描述</h3>
+                <p class="prose">{{ detail.copy.description || '暂无描述' }}</p>
+                <h3>关键词</h3>
+                <div class="chip-list">
+                  <span v-for="word in detail.copy.keywords" :key="word" class="tag">
+                    {{ word }}
+                  </span>
+                </div>
+                <RouterLink :to="`/copies?task_id=${taskId}`" class="btn btn-secondary spaced">
+                  <AppIcon name="edit" :size="16" />
+                  到文案库编辑
+                </RouterLink>
+              </template>
+              <PageState
+                v-else
+                empty
+                title="文案还在路上"
+                description="文案节点完成并保存后，会显示在这里。"
+                icon="file"
+              />
+            </template>
+            <template v-else-if="tab === 'images'">
+              <div v-if="imageAssets.length" class="media-grid">
+                <article v-for="asset in imageAssets" :key="asset.id" class="media-card">
+                  <MediaPreview :src="asset.url" :alt="detail.task.sku_name || '生成图片'" />
+                  <div class="media-card-body">
+                    <h3>
+                      {{
+                        { main: '商品主图', scene: '场景图', detail: '细节图' }[
+                          asset.sub_type || ''
+                        ] ||
+                        asset.sub_type ||
+                        '商品图片'
+                      }}
+                    </h3>
+                    <span v-if="asset.is_mock" class="status-badge status-warning">模拟素材</span>
+                  </div>
+                </article>
+              </div>
+              <PageState
+                v-else
+                empty
+                title="还没有生成图片"
+                description="图片节点完成并保存后，会显示在这里。"
+                icon="image"
+              />
+            </template>
+            <template v-else-if="tab === 'videos'">
+              <div v-if="videoAssets.length" class="stack">
+                <article v-for="asset in videoAssets" :key="asset.id" class="media-card">
+                  <MediaPreview :src="asset.url" type="video" :controls="true" alt="生成视频" />
+                  <div class="media-card-body">
+                    <h3>商品视频</h3>
+                    <span v-if="asset.is_mock" class="status-badge status-warning">模拟素材</span>
+                  </div>
+                </article>
+              </div>
+              <PageState
+                v-else
+                empty
+                title="还没有生成视频"
+                description="视频节点完成并保存后，可在这里播放。"
+                icon="video"
+              />
+            </template>
+            <template v-else>
+              <ReviewResult v-if="reviewReport" :report="reviewReport" />
+              <PageState
+                v-else
+                empty
+                title="审核报告尚未生成"
+                description="审核节点执行后，会显示真实评分及改进建议。"
+                icon="shield"
+              />
+              <RouterLink
+                v-if="detail.task.status === 'completed'"
+                to="/packages"
+                class="btn btn-secondary spaced"
+              >
+                查看交付中心
+                <AppIcon name="arrow-right" :size="16" />
+              </RouterLink>
+            </template>
+          </div>
+        </section>
+      </div>
+    </template>
+  </PageState>
+  <AppDialog
+    v-model="drawer"
+    :title="selectedName"
+    description="以下为真实记录的执行结果，最新记录在前。"
+    drawer
+  >
+    <PageState
+      :empty="!history.length"
+      title="暂无执行记录"
+      description="节点完成或报告错误后，记录会显示在这里。"
+    >
+      <article v-for="(record, index) in history" :key="record.id || index" class="card spaced">
+        <div class="row between wrap">
+          <StatusBadge :status="record.status" />
+          <span class="subtle">{{ dateText(record.create_time) }}</span>
+        </div>
+        <dl class="details-list spaced">
+          <div>
+            <dt>执行耗时</dt>
+            <dd>{{ record.elapsed_ms ?? 0 }} ms</dd>
+          </div>
+          <div>
+            <dt>输入 / 输出 Tokens</dt>
+            <dd>
+              {{ record.prompt_tokens ?? 0 }} /
+              {{ record.completion_tokens ?? 0 }}
+            </dd>
+          </div>
+          <div>
+            <dt>预估费用</dt>
+            <dd>{{ moneyText(record.cost) }} USD</dd>
+          </div>
+        </dl>
+        <div v-if="record.status === 'failed'" class="notice notice-danger spaced">
+          <span>
+            节点返回的失败信息：
+            <span class="prose">
+              {{ outputText(record.output_data) || '当前记录没有提供具体原因。' }}
+            </span>
+          </span>
+        </div>
+        <details class="details-toggle">
+          <summary>查看输入与输出快照</summary>
+          <h3 class="spaced">输入</h3>
+          <pre class="detail-json">{{ outputText(record.input_data) }}</pre>
+          <h3>输出</h3>
+          <pre class="detail-json">{{ outputText(record.output_data) }}</pre>
+        </details>
+      </article>
+    </PageState>
+  </AppDialog>
+</template>

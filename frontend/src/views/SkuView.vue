@@ -1,559 +1,441 @@
-<template>
-  <div class="sku-page">
-    <div class="page-title-row">
-      <div>
-        <h1 class="page-title">商品 SKU 资产库</h1>
-        <p class="page-desc">维护出海选品基础规格、特征卖点与设计参考图</p>
-      </div>
-      <div class="actions">
-        <button class="btn btn-primary" @click="openCreateModal">+ 录入新商品 SKU</button>
-      </div>
-    </div>
-
-    <!-- 筛选工具栏 -->
-    <div class="card filter-bar mb-4">
-      <div class="filter-group">
-        <label>关键词搜索:</label>
-        <input type="text" v-model="searchQ" class="form-input" placeholder="输入编码或名称" @keyup.enter="loadSkus" />
-      </div>
-      <div class="filter-group">
-        <label>类目分类:</label>
-        <select v-model="selectedCategory" class="form-select" @change="loadSkus">
-          <option value="">全部类目</option>
-          <option value="户外运动">户外运动</option>
-          <option value="数码配件">数码配件</option>
-          <option value="家居生活">家居生活</option>
-        </select>
-      </div>
-      <button class="btn btn-secondary btn-sm" @click="loadSkus">搜索过滤</button>
-    </div>
-
-    <!-- SKU 卡片栅格 -->
-    <div class="sku-grid">
-      <div v-for="s in skus" :key="s.id" class="sku-card card">
-        <div class="sku-media">
-          <img :src="s.images?.[0] || '/bg_img/outdoor.jpg'" class="sku-img" />
-          <span class="category-tag">{{ s.category }}</span>
-        </div>
-        <div class="sku-content">
-          <div class="sku-code-row">
-            <code class="code-pill">{{ s.code }}</code>
-          </div>
-          <h3 class="sku-title">{{ s.name }}</h3>
-          <p class="sku-desc">{{ s.description }}</p>
-
-          <div class="specs-box mt-2">
-            <div v-for="(v, k) in s.specs" :key="k" class="spec-row">
-              <span class="spec-k">{{ k }}:</span>
-              <span class="spec-v">{{ v }}</span>
-            </div>
-          </div>
-        </div>
-        <div class="sku-card-actions mt-3">
-          <button class="btn btn-primary btn-sm full-width" @click="generateForSku(s.id)">⚡ 发起 7-Agent 生成</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 录入新 SKU 弹窗 -->
-    <div v-if="showCreateModal" class="modal-overlay" @click.self="showCreateModal = false">
-      <div class="modal-content modal-lg">
-        <h3 class="modal-title mb-4">录入新商品 SKU</h3>
-
-        <div class="form-group">
-          <label class="form-label">商品编码 (SKU Code)</label>
-          <div style="display: flex; gap: 8px;">
-            <input type="text" v-model="form.code" class="form-input" placeholder="例如: OUT-12345" />
-            <button type="button" class="btn btn-secondary" style="white-space: nowrap; padding: 0 16px;" @click="generateSku">自动生成</button>
-          </div>
-        </div>
-        
-        <div class="form-group">
-          <label class="form-label">商品名称</label>
-          <input type="text" v-model="form.name" class="form-input" placeholder="例如: 极简防风双人户外露营帐篷" />
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">类目分类</label>
-          <select v-model="form.category" class="form-select" @change="onCategoryChange">
-            <option value="户外运动">户外运动</option>
-            <option value="数码配件">数码配件</option>
-            <option value="家居生活">家居生活</option>
-          </select>
-        </div>
-
-        <div class="form-group">
-          <div class="label-with-action">
-            <label class="form-label mb-0">商品描述与白话卖点</label>
-            <button 
-              type="button" 
-              class="btn btn-xs btn-ai-extract" 
-              :disabled="isExtracting"
-              @click="aiExtractSpecs" 
-              title="发送至通义千问 Qwen 大模型自动提取 JSON 参数"
-            >
-              {{ isExtracting ? '⚡ 正在调用通义千问提取中...' : '⚡ 大模型智能提取规格' }}
-            </button>
-          </div>
-          <textarea 
-            v-model="form.description" 
-            class="form-textarea" 
-            rows="3" 
-            placeholder="如：这是一款最新研发的降噪耳机，蓝牙5.4芯片，防水达到IPX5级，电池500mAh，重210g..."
-          ></textarea>
-        </div>
-
-        <!-- 商品详细规格参数编辑器 -->
-        <div class="form-group specs-editor-card">
-          <div class="specs-editor-header">
-            <div>
-              <span class="specs-title">
-                商品详细规格参数 
-                <span v-if="specList.length > 0" class="specs-count">({{ specList.length }} 项)</span>
-              </span>
-              <span class="specs-subtitle">配置产品核心特征（如材质、尺寸、功能指标），便于自动渲染商品详情表与素材特征</span>
-            </div>
-            <div class="specs-actions">
-              <button type="button" class="btn btn-xs btn-outline" @click="loadCategoryPresetSpecs">
-                📋 载入【{{ form.category }}】预设参数
-              </button>
-              <button type="button" class="btn btn-xs btn-secondary" @click="addSpecRow">
-                + 新增属性键值
-              </button>
-            </div>
-          </div>
-
-          <div class="specs-input-list">
-            <div v-for="(item, idx) in specList" :key="idx" class="spec-input-row">
-              <input type="text" v-model="item.key" class="form-input key-input" placeholder="参数名称 (如: 蓝牙版本)" />
-              <span class="colon">:</span>
-              <input type="text" v-model="item.value" class="form-input val-input" placeholder="参数数值 (如: 5.4)" />
-              <button type="button" class="btn-icon-del" title="删除" @click="removeSpecRow(idx)">✕</button>
-            </div>
-            <div v-if="specList.length === 0" class="empty-specs-tip">
-              暂未配置规格参数，可点击右上角【+ 新增属性键值】无限扩展添加
-            </div>
-          </div>
-        </div>
-
-        <div class="modal-footer mt-4">
-          <button class="btn btn-secondary" @click="showCreateModal = false" :disabled="isSubmitting">取消</button>
-          <button class="btn btn-primary" @click="submitCreateSku" :disabled="isSubmitting">
-            <template v-if="isSubmitting">
-              <span class="spinner"></span> 正在保存与提取规格...
-            </template>
-            <template v-else>
-              保存入库
-            </template>
-          </button>
-        </div>
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, watch, onUnmounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import client from '@/api/client'
-
-const router = useRouter()
-const skus = ref<any[]>([])
-const searchQ = ref('')
-const selectedCategory = ref('')
-const showCreateModal = ref(false)
-const isExtracting = ref(false)
-
-interface SpecItem {
-  key: string
-  value: string
-}
-
-const specList = ref<SpecItem[]>([])
-
+import { useCollection } from '@/composables/useCollection'
+import { useUiStore } from '@/stores/ui'
+import { errorMessage, safeUrl } from '@/utils/format'
+import type { Sku, ApiResponse } from '@/types'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import PageHeading from '@/components/ui/PageHeading.vue'
+import PageState from '@/components/ui/PageState.vue'
+import AppDialog from '@/components/ui/AppDialog.vue'
+import PaginationBar from '@/components/ui/PaginationBar.vue'
+import MediaPreview from '@/components/ui/MediaPreview.vue'
+import TaskCreateDialog from '@/components/ui/TaskCreateDialog.vue'
+const route = useRoute(),
+  router = useRouter(),
+  ui = useUiStore(),
+  list = useCollection<Sku>('/skus', 9)
+const query = ref(''),
+  category = ref(''),
+  showForm = ref(false),
+  editing = ref<Sku | null>(null),
+  busy = ref(false),
+  extracting = ref(false),
+  formError = ref(''),
+  creation = ref(false),
+  chosen = ref<Sku>()
 const form = ref({
-  code: '',
-  name: '',
-  category: '户外运动',
-  description: '',
-  images: []
-})
-
-// 类目通用规格模版预设
-const CATEGORY_PRESETS: Record<string, SpecItem[]> = {
-  '户外运动': [
-    { key: '材质', value: '高强度防水撕裂布' },
-    { key: '重量', value: '1.5kg' },
-    { key: '防风等级', value: '7级' },
-    { key: '展开尺寸', value: '200x150x110cm' }
-  ],
-  '数码配件': [
-    { key: '蓝牙版本', value: '5.4' },
-    { key: '防水等级', value: 'IPX5' },
-    { key: '电池容量', value: '500mAh' },
-    { key: '降噪深度', value: '45dB' }
-  ],
-  '家居生活': [
-    { key: '材质', value: '天然环保大理石/竹木' },
-    { key: '适用空间', value: '客厅/卧室' },
-    { key: '容量', value: '1.2L' },
-    { key: '净重', value: '850g' }
-  ]
-}
-
-function openCreateModal() {
-  resetForm()
-  showCreateModal.value = true
-}
-
-function onCategoryChange() {
-  if (specList.value.length === 0 || specList.value.every(s => !s.key && !s.value)) {
-    loadCategoryPresetSpecs()
-  }
-}
-
-function loadCategoryPresetSpecs() {
-  const preset = CATEGORY_PRESETS[form.value.category] || []
-  specList.value = preset.map(item => ({ ...item }))
-}
-
-function addSpecRow() {
-  specList.value.push({ key: '', value: '' })
-}
-
-function removeSpecRow(index: number) {
-  specList.value.splice(index, 1)
-}
-
-function generateSku() {
-  const categoryCodeMap: Record<string, string> = {
-    '户外运动': 'OUT',
-    '数码配件': 'DGC',
-    '家居生活': 'HOM'
-  }
-  const prefix = categoryCodeMap[form.value.category] || 'GEN'
-  const randomNum = Math.floor(Math.random() * 90000) + 10000
-  form.value.code = `${prefix}-${randomNum}`
-}
-
-// 真正调用后端 API 通义千问 Qwen 大模型提取白话中的规格属性
-async function aiExtractSpecs() {
-  const desc = form.value.description
-  if (!desc.trim()) {
-    alert('请先在上方输入商品白话描述！')
-    return
-  }
-
-  isExtracting.value = true
-  try {
-    const res = await client.post('/skus/extract-specs', { description: desc })
-    const specsData = res.data?.data
-    const isMock = res.data?.is_mock ? ' (Mock模式)' : ' (通义千问 Qwen)'
-
-    if (specsData && typeof specsData === 'object' && Object.keys(specsData).length > 0) {
-      const extracted: SpecItem[] = Object.entries(specsData).map(([k, v]) => ({
-        key: String(k),
-        value: String(v)
-      }))
-      specList.value = extracted
-      alert(`⚡ 通义千问 Qwen 大模型提取成功${isMock}！已结构化解析出 ${extracted.length} 项规格参数，可自由核对或微调。`)
-    } else {
-      alert('大模型已响应，未从描述中提取出明确的规格属性，可手动点击【+ 新增属性键值】。')
-      if (specList.value.length === 0) {
-        addSpecRow()
-      }
-    }
-  } catch (e: any) {
-    alert('调用大模型接口失败: ' + (e.response?.data?.detail || e.message))
-  } finally {
-    isExtracting.value = false
-  }
-}
-
-async function loadSkus() {
-  try {
-    let url = '/skus?page=1&page_size=50'
-    if (searchQ.value) url += `&q=${searchQ.value}`
-    if (selectedCategory.value) url += `&category=${selectedCategory.value}`
-    const res = await client.get(url)
-    skus.value = res.data?.data?.items || []
-  } catch (e) {
-    console.error(e)
-  }
-}
-
-function resetForm() {
-  form.value = {
     code: '',
     name: '',
     category: '户外运动',
     description: '',
-    images: []
+    images: '',
+  }),
+  specs = ref<{ key: string; value: string }[]>([])
+let debounce: ReturnType<typeof setTimeout> | undefined
+watch(query, () => {
+  clearTimeout(debounce)
+  debounce = setTimeout(() => {
+    list.params.q = query.value.trim() || undefined
+    void list.reload(true)
+  }, 300)
+})
+watch(category, () => {
+  list.params.category = category.value || undefined
+  void list.reload(true)
+})
+onUnmounted(() => clearTimeout(debounce))
+function open(sku?: Sku) {
+  editing.value = sku || null
+  form.value = {
+    code: sku?.code || '',
+    name: sku?.name || '',
+    category: sku?.category || '户外运动',
+    description: sku?.description || '',
+    images: (sku?.images || []).join('\n'),
   }
-  loadCategoryPresetSpecs()
+  specs.value = Object.entries(sku?.specs || {}).map(([key, value]) => ({
+    key,
+    value: String(value),
+  }))
+  formError.value = ''
+  showForm.value = true
 }
-
-const isSubmitting = ref(false)
-
-async function submitCreateSku() {
-  if (!form.value.code || !form.value.name) {
-    alert('请填写编码与商品名称')
+watch(
+  () => route.query.new,
+  (value) => {
+    if (value === '1') {
+      open()
+      void router.replace('/skus')
+    }
+  },
+  { immediate: true },
+)
+function generateCode() {
+  form.value.code = 'SKU-' + crypto.randomUUID().slice(0, 8).toUpperCase()
+}
+function addTemplates() {
+  const labels: Record<string, string[]> = {
+    户外运动: ['材质', '重量', '尺寸'],
+    数码配件: ['型号', '尺寸', '电池容量'],
+    家居生活: ['材质', '尺寸', '容量'],
+  }
+  for (const key of labels[form.value.category] || ['材质', '尺寸'])
+    if (!specs.value.some((row) => row.key === key)) specs.value.push({ key, value: '' })
+}
+async function extract() {
+  if (extracting.value || busy.value) return
+  if (!form.value.description.trim()) {
+    formError.value = '先填写商品描述，再使用 AI 提取。'
     return
   }
-
-  const specsDict: Record<string, string> = {}
-  specList.value.forEach(item => {
-    if (item.key.trim() && item.value.trim()) {
-      specsDict[item.key.trim()] = item.value.trim()
-    }
-  })
-
-  // 如果用户写了描述但没写参数，后台会自动触发大模型，这里给个友好的 UI 提示等待
-  if (Object.keys(specsDict).length === 0 && form.value.description.trim()) {
-    console.log('用户未填规格但填写了描述，后台将自动兜底触发 Qwen 大模型提取...')
-  }
-
-  isSubmitting.value = true
+  if (
+    !(await ui.confirm(
+      '使用 AI 提取规格',
+      '将调用模型分析商品描述，可能产生费用。提取结果仍需你核对。',
+      '提取规格',
+    ))
+  )
+    return
+  extracting.value = true
+  formError.value = ''
   try {
-    const imgMap: Record<string, string> = {
-      '户外运动': '/bg_img/outdoor.jpg',
-      '数码配件': '/bg_img/digital.jpg',
-      '家居生活': '/bg_img/home.jpg'
-    }
-    const payload = { 
-      ...form.value, 
-      specs: specsDict,
-      images: [imgMap[form.value.category] || '/bg_img/outdoor.jpg'] 
-    }
-
-    await client.post('/skus', payload)
-    showCreateModal.value = false
-    resetForm()
-    alert('SKU 创建成功！参数已自动入库。')
-    loadSkus()
-  } catch (e: any) {
-    alert(e.response?.data?.detail || '创建失败，编码可能已存在')
+    const response = await client.post<ApiResponse<Record<string, unknown>>>(
+      '/skus/extract-specs',
+      { description: form.value.description },
+    )
+    specs.value = Object.entries(response.data.data || {}).map(([key, value]) => ({
+      key,
+      value: String(value),
+    }))
+    ui.notify(
+      specs.value.length ? '已提取规格，请核对后保存。' : '没有提取到明确规格，请手动填写。',
+      specs.value.length ? 'success' : 'info',
+    )
+  } catch (cause) {
+    formError.value = errorMessage(cause)
   } finally {
-    isSubmitting.value = false
+    extracting.value = false
   }
 }
-
-async function generateForSku(skuId: string) {
+async function save() {
+  if (busy.value || extracting.value) return
+  formError.value = ''
+  const values: Record<string, string> = {}
+  for (const row of specs.value) {
+    const key = row.key.trim(),
+      value = row.value.trim()
+    if (!key && !value) continue
+    if (!key || !value) {
+      formError.value = '请补全规格名称和数值，或删除空行。'
+      return
+    }
+    if (key in values) {
+      formError.value = '规格名称重复，请合并后保存。'
+      return
+    }
+    values[key] = value
+  }
+  const images = form.value.images
+    .split('\n')
+    .map((item) => item.trim())
+    .filter(Boolean)
+  if (images.some((url) => !safeUrl(url))) {
+    formError.value = '请填写有效的 HTTP 或 HTTPS 图片地址。'
+    return
+  }
+  if (
+    !editing.value &&
+    !Object.keys(values).length &&
+    form.value.description.trim() &&
+    !(await ui.confirm(
+      '保存并提取规格',
+      '当前没有填写规格，保存时服务会调用 AI 提取，可能产生费用。你也可以取消并手动填写。',
+      '保存并提取',
+    ))
+  )
+    return
+  busy.value = true
   try {
-    const res = await client.post('/tasks', {
-      sku_id: skuId,
-      config: { platform: 'amazon', language: 'en', max_retries: 2 }
-    })
-    const taskId = res.data?.data?.task_id
-    alert('任务已发起，正在转入 7-Agent 工作台！')
-    router.push(`/workbench/${taskId}`)
-  } catch (e) {
-    alert('发起失败')
+    const payload = {
+      name: form.value.name.trim(),
+      category: form.value.category,
+      description: form.value.description,
+      specs: values,
+      images,
+    }
+    if (editing.value) await client.put(`/skus/${editing.value.id}`, payload)
+    else await client.post('/skus', { ...payload, code: form.value.code.trim() })
+    showForm.value = false
+    ui.notify(editing.value ? '商品资料已更新' : '商品资料已保存')
+    await list.reload(!editing.value)
+  } catch (cause) {
+    formError.value = errorMessage(cause, '保存失败，请检查商品编码。')
+  } finally {
+    busy.value = false
   }
 }
-
-onMounted(() => {
-  loadSkus()
-})
+async function remove(sku: Sku) {
+  if (
+    !(await ui.confirm(
+      '删除商品资料',
+      `将从商品列表中移除“${sku.name}”，已有任务记录会保留。`,
+      '确认删除',
+      true,
+    ))
+  )
+    return
+  try {
+    await client.delete(`/skus/${sku.id}`)
+    ui.notify('商品已移除')
+    await list.reload(true)
+  } catch (cause) {
+    ui.notify(errorMessage(cause), 'error')
+  }
+}
+function create(sku: Sku) {
+  chosen.value = sku
+  creation.value = true
+}
 </script>
-
-<style scoped>
-.page-title-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 24px;
-}
-.page-title { font-size: 22px; font-weight: 700; }
-.page-desc { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
-
-.filter-bar {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 14px 18px;
-}
-.filter-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.sku-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 20px;
-}
-.sku-card {
-  display: flex;
-  flex-direction: column;
-  padding: 0;
-  overflow: hidden;
-}
-.sku-media {
-  position: relative;
-  height: 180px;
-  overflow: hidden;
-}
-.sku-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.category-tag {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  background: rgba(15, 23, 42, 0.75);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 4px;
-}
-.sku-content {
-  padding: 16px;
-  flex: 1;
-}
-.sku-code-row { margin-bottom: 6px; }
-.code-pill { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 11.5px; }
-.sku-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
-.sku-desc { font-size: 12px; color: var(--text-muted); line-height: 1.4; max-height: 38px; overflow: hidden; }
-
-.specs-box {
-  background: #f8fafc;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px 10px;
-  font-size: 11.5px;
-}
-.spec-row { display: flex; justify-content: space-between; margin-bottom: 2px; }
-.spec-k { color: var(--text-light); }
-.spec-v { font-weight: 500; }
-
-.sku-card-actions { padding: 0 16px 16px; }
-.full-width { width: 100%; }
-
-/* 扩展规格参数编辑器样式 */
-.modal-lg { max-width: 620px; }
-.label-with-action {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-}
-.btn-ai-extract {
-  background: #eff6ff;
-  color: #2563eb;
-  border: 1px solid #bfdbfe;
-  font-size: 11.5px;
-  font-weight: 600;
-  padding: 3px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-.btn-ai-extract:hover {
-  background: #dbeafe;
-  color: #1d4ed8;
-}
-
-.specs-editor-card {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 12px 14px;
-  margin-top: 14px;
-}
-.specs-editor-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 10px;
-}
-.specs-title {
-  display: block;
-  font-size: 13.5px;
-  font-weight: 600;
-  color: #1e293b;
-}
-.specs-count {
-  font-size: 12px;
-  color: #3b82f6;
-  font-weight: 600;
-  margin-left: 2px;
-}
-.specs-subtitle {
-  display: block;
-  font-size: 11px;
-  color: #64748b;
-  margin-top: 2px;
-}
-.specs-actions {
-  display: flex;
-  gap: 8px;
-}
-.btn-outline {
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
-  color: #475569;
-}
-.btn-outline:hover {
-  background: #f1f5f9;
-}
-
-.specs-input-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 300px;
-  overflow-y: auto;
-  padding-right: 6px;
-}
-.specs-input-list::-webkit-scrollbar {
-  width: 5px;
-}
-.specs-input-list::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 4px;
-}
-.spec-input-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.key-input {
-  width: 40%;
-  font-size: 12.5px;
-}
-.colon {
-  font-weight: bold;
-  color: #94a3b8;
-}
-.val-input {
-  flex: 1;
-  font-size: 12.5px;
-}
-.btn-icon-del {
-  background: transparent;
-  border: none;
-  color: #ef4444;
-  font-size: 14px;
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 4px;
-}
-.btn-icon-del:hover {
-  background: #fee2e2;
-}
-.empty-specs-tip {
-  font-size: 12px;
-  color: #94a3b8;
-  text-align: center;
-  padding: 12px 0;
-}
-
-.modal-footer { display: flex; justify-content: flex-end; gap: 12px; }
-</style>
-
+<template>
+  <PageHeading title="商品资料" description="每个好创意，都从真实的商品信息开始。">
+    <button class="btn btn-primary" @click="open()">
+      <AppIcon name="plus" :size="17" />
+      录入新商品
+    </button>
+  </PageHeading>
+  <div class="section-toolbar">
+    <div class="filter-bar">
+      <div class="search-input">
+        <AppIcon name="search" :size="18" />
+        <input
+          v-model="query"
+          type="search"
+          placeholder="搜索名称或 SKU 编码"
+          aria-label="搜索商品"
+        />
+      </div>
+      <select v-model="category" class="select" aria-label="商品类目">
+        <option value="">全部类目</option>
+        <option>户外运动</option>
+        <option>数码配件</option>
+        <option>家居生活</option>
+      </select>
+    </div>
+    <button class="btn btn-secondary btn-sm" :disabled="list.loading" @click="list.reload()">
+      <AppIcon name="refresh" :size="16" />
+      刷新
+    </button>
+  </div>
+  <PageState
+    :loading="list.loading"
+    :error="list.error"
+    :error-code="list.errorCode"
+    :empty="!list.items.length"
+    title="还没有相关商品"
+    description="录入商品的名称、规格与参考图，为内容创作做好准备。"
+    icon="box"
+    @retry="list.reload()"
+  >
+    <template #action><button class="btn btn-primary" @click="open()">录入商品</button></template>
+    <div class="products-grid">
+      <article v-for="sku in list.items" :key="sku.id" class="product-card">
+        <div class="product-cover">
+          <MediaPreview :src="sku.images?.[0]" :alt="sku.name" />
+          <span class="category-tag">{{ sku.category || '未分类' }}</span>
+        </div>
+        <div class="product-info">
+          <span class="code-pill">{{ sku.code }}</span>
+          <h2>{{ sku.name }}</h2>
+          <p>{{ sku.description || '暂未填写商品描述' }}</p>
+          <div class="product-specs">
+            <span
+              v-for="(value, key) in Object.fromEntries(
+                Object.entries(sku.specs || {}).slice(0, 3),
+              )"
+              :key="key"
+            >
+              {{ key }}：{{ value }}
+            </span>
+            <span v-if="!Object.keys(sku.specs || {}).length">待补充商品规格</span>
+          </div>
+          <div class="product-actions">
+            <button class="btn btn-primary btn-sm" @click="create(sku)">
+              <AppIcon name="spark" :size="16" />
+              为这个商品创作
+            </button>
+            <button
+              class="icon-button"
+              :aria-label="`编辑${sku.name}`"
+              title="编辑商品"
+              @click="open(sku)"
+            >
+              <AppIcon name="edit" :size="17" />
+            </button>
+            <button
+              class="icon-button"
+              :aria-label="`删除${sku.name}`"
+              title="删除商品"
+              @click="remove(sku)"
+            >
+              <AppIcon name="trash" :size="17" />
+            </button>
+          </div>
+        </div>
+      </article>
+    </div>
+    <PaginationBar
+      :page="list.page"
+      :size="list.size"
+      :total="list.total"
+      :loading="list.loading"
+      @change="list.page = $event"
+    />
+  </PageState>
+  <AppDialog
+    v-model="showForm"
+    :title="editing ? '编辑商品资料' : '录入新商品'"
+    description="准确的规格和参考图，能让创作更贴近实际商品。"
+    :busy="busy || extracting"
+    wide
+  >
+    <form id="sku-form" @submit.prevent="save">
+      <div class="form-grid">
+        <div class="field">
+          <label for="sku-code">商品编码</label>
+          <div class="row">
+            <input
+              id="sku-code"
+              v-model="form.code"
+              required
+              maxlength="128"
+              class="input"
+              placeholder="例如 OUT-2026-001"
+              :disabled="!!editing || busy"
+            />
+            <button
+              v-if="!editing"
+              type="button"
+              class="btn btn-secondary btn-sm"
+              @click="generateCode"
+            >
+              生成
+            </button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="sku-category">商品类目</label>
+          <select id="sku-category" v-model="form.category" class="select" :disabled="busy">
+            <option>户外运动</option>
+            <option>数码配件</option>
+            <option>家居生活</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="sku-name">商品名称</label>
+        <input
+          id="sku-name"
+          v-model="form.name"
+          required
+          class="input"
+          maxlength="256"
+          placeholder="填写实际商品名称"
+          :disabled="busy"
+        />
+      </div>
+      <div class="field">
+        <div class="hint-label">
+          <label for="sku-description">商品描述</label>
+          <button class="text-button" type="button" :disabled="extracting || busy" @click="extract">
+            <span v-if="extracting" class="spinner" />
+            <AppIcon v-else name="spark" :size="16" />
+            {{ extracting ? '正在提取…' : 'AI 提取规格' }}
+          </button>
+        </div>
+        <textarea
+          id="sku-description"
+          v-model="form.description"
+          class="textarea"
+          placeholder="描述材质、尺寸、功能和实际卖点。"
+          :disabled="busy || extracting"
+        />
+      </div>
+      <div class="form-section">
+        <div class="hint-label">
+          <label>商品规格</label>
+          <button type="button" class="text-button" @click="addTemplates">添加类目空白字段</button>
+        </div>
+        <p>只填写已确认的真实参数，不填示例或推测数值。</p>
+        <div v-for="(spec, index) in specs" :key="index" class="spec-row">
+          <input
+            v-model="spec.key"
+            class="input"
+            placeholder="规格名称"
+            :aria-label="`规格名称 ${index + 1}`"
+            :disabled="busy || extracting"
+          />
+          <input
+            v-model="spec.value"
+            class="input"
+            placeholder="真实数值"
+            :aria-label="`规格数值 ${index + 1}`"
+            :disabled="busy || extracting"
+          />
+          <button
+            class="icon-button"
+            type="button"
+            :aria-label="`删除规格 ${index + 1}`"
+            :disabled="busy || extracting"
+            @click="specs.splice(index, 1)"
+          >
+            <AppIcon name="close" :size="16" />
+          </button>
+        </div>
+        <button
+          class="text-button spaced"
+          type="button"
+          :disabled="busy || extracting"
+          @click="specs.push({ key: '', value: '' })"
+        >
+          <AppIcon name="plus" :size="15" />
+          添加规格
+        </button>
+      </div>
+      <div class="field">
+        <label for="sku-images">参考图片地址（可选）</label>
+        <textarea
+          id="sku-images"
+          v-model="form.images"
+          class="textarea"
+          placeholder="每行一个图片 URL，没有参考图时可留空。"
+          :disabled="busy"
+        />
+        <small class="field-help">不会为你的商品自动填入其他产品的示例图片。</small>
+      </div>
+      <p class="cost-note">
+        <AppIcon name="info" :size="16" />
+        AI 提取可能产生费用。创建商品时若有描述但未填规格，保存也会触发提取。
+      </p>
+      <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
+    </form>
+    <template #footer>
+      <button class="btn btn-secondary" :disabled="busy || extracting" @click="showForm = false">
+        取消
+      </button>
+      <button class="btn btn-primary" type="submit" form="sku-form" :disabled="busy || extracting">
+        <span v-if="busy" class="spinner" />
+        {{ busy ? '正在保存…' : '保存商品' }}
+      </button>
+    </template>
+  </AppDialog>
+  <TaskCreateDialog
+    v-if="creation"
+    v-model="creation"
+    :sku="chosen"
+    @created="router.push(`/workbench/${$event}`)"
+  />
+</template>
