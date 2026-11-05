@@ -17,6 +17,8 @@ from app.core.middlewares import RequestContextMiddleware
 from app.core.deps import get_current_user_and_tenant
 from fastapi import Depends, Request
 from app.clients.provider_factory import ProviderCallError
+from app.core.provider_keys import ProviderConfigurationError
+from fastapi.exceptions import RequestValidationError
 
 # 预留生命周期管理
 @asynccontextmanager
@@ -57,6 +59,18 @@ app.include_router(api_v1_router)
 @app.exception_handler(ProviderCallError)
 async def provider_unavailable(request: Request, exc: ProviderCallError):
     return JSONResponse(status_code=502, content={"code": 502, "data": None, "message": "模型服务不可用，请检查配置或稍后重试"})
+
+
+@app.exception_handler(ProviderConfigurationError)
+async def provider_configuration_error(request: Request, exc: ProviderConfigurationError):
+    return JSONResponse(status_code=503, content={"code":503, "data":None, "message":str(exc)})
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid_request(request: Request, exc: RequestValidationError):
+    # Pydantic's default JSON includes the rejected input, which may be an API key.
+    detail = [{"loc":error["loc"], "type":error["type"], "msg":error["msg"]} for error in exc.errors()]
+    return JSONResponse(status_code=422, content={"code":422, "data":None, "message":"请求参数无效，请核对填写内容。", "detail":detail})
 
 @app.get("/health", tags=["System"])
 async def health_check():

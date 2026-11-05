@@ -58,23 +58,23 @@ async def seed_data():
                 "type": "llm",
                 "name": "通义千问 (Qwen-Max/Plus)",
                 "api_key_enc": "",
-                "config": {"model": "qwen-plus", "temperature": 0.7, "max_tokens": 2048},
+                "config": {"model": "qwen-plus", "credential_source": "environment", "embedding_model": "text-embedding-v4"},
                 "is_default": 1
             },
             {
                 "id": "prov_wanx",
                 "type": "image",
-                "name": "通义万相 (Wanx 2.1)",
+                "name": "Qwen Image 图片服务",
                 "api_key_enc": "",
-                "config": {"model": "wanx2.1-t2i-turbo", "size": "1024*1024", "n": 1},
+                "config": {"model": "qwen-image-3.0-pro", "credential_source": "environment"},
                 "is_default": 1
             },
             {
                 "id": "prov_kling",
                 "type": "video",
-                "name": "快手可灵 (Kling AI)",
+                "name": "通义万相视频服务",
                 "api_key_enc": "",
-                "config": {"model": "kling-v1", "duration": 5, "aspect_ratio": "16:9"},
+                "config": {"model": "wan3.0-video", "credential_source": "environment"},
                 "is_default": 1
             }
         ]

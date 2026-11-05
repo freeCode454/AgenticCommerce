@@ -344,7 +344,7 @@ test('手机导航抽屉焦点、Escape 恢复与页面搜索', async ({ page })
   await expect(page).toHaveURL(/\/settings$/)
 })
 
-test('模型配置保存与运行测试明确区分，付费测试需主动确认', async ({ page }) => {
+test('租户模型配置保存生效，所选配置付费测试需主动确认', async ({ page }) => {
   const h = await setup(page)
   h.handler = async (route, path) => {
     if (path === '/providers/provider-1' && route.request().method() === 'PUT') {
@@ -368,20 +368,29 @@ test('模型配置保存与运行测试明确区分，付费测试需主动确�
   await page.goto('/providers')
   await ready(page)
   expect(h.writes).toHaveLength(0)
-  await page.getByRole('button', { name: '编辑记录' }).click()
-  const dialog = page.getByRole('dialog', { name: '编辑模型配置记录' })
-  await dialog.getByRole('button', { name: '保存配置记录' }).click()
+  await page.getByRole('button', { name: '编辑配置' }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑模型配置' })
+  await dialog.getByLabel('配置名称').fill('Offline model service')
+  await dialog.getByRole('button', { name: '保存配置' }).click()
   await expect(
-    page.getByText('配置已保存到数据库，当前运行配置未改变。', { exact: true }),
+    page.getByText('配置已保存，后续新任务将使用此配置。', { exact: true }),
   ).toBeVisible()
   expect(h.writes[0].body).not.toHaveProperty('api_key')
-  await page.getByRole('button', { name: '测试运行服务' }).click()
-  const confirm = page.getByRole('dialog', { name: '测试当前运行服务' })
+  await page.getByRole('button', { name: '测试所选配置' }).click()
+  const confirm = page.getByRole('dialog', { name: '测试所选配置' })
   await expect(confirm).toContainText('可能产生费用')
   expect(h.writes).toHaveLength(1)
   await confirm.getByRole('button', { name: '开始模型测试' }).click()
-  await expect(page.getByText('运行服务测试通过 · 模拟模式', { exact: true })).toBeVisible()
+  await expect(
+    page.getByText('配置测试返回 · 模拟模式（未验证真实服务）', { exact: true }),
+  ).toBeVisible()
   expect(h.writes[1].path).toBe('/providers/provider-1/test')
+  await page.getByRole('button', { name: '编辑配置' }).click()
+  await dialog.getByLabel('配置名称').fill('Updated offline model')
+  await dialog.getByRole('button', { name: '保存配置', exact: true }).click()
+  await expect(
+    page.getByText('配置测试返回 · 模拟模式（未验证真实服务）', { exact: true }),
+  ).toHaveCount(0)
 })
 
 test('交付清单展示接口返回内容，独立审核不自动调用模型', async ({ page }) => {
@@ -438,4 +447,40 @@ test('工作台自动重连达到上限后停止，可手动恢复', async ({ pa
   h.disconnect = false
   await page.getByRole('button', { name: '重新连接', exact: true }).click()
   await expect(page.getByText('实时连接正常', { exact: true })).toBeVisible()
+})
+
+test('模型编辑可选择工作空间凭据，关闭后清除输入密钥', async ({ page }) => {
+  const h = await setup(page)
+  h.handler = async (route, path) => {
+    if (path === '/providers/provider-1' && route.request().method() === 'PUT') {
+      await route.fulfill({ json: { code: 200, data: { id: 'provider-1' }, message: 'saved' } })
+      return true
+    }
+    return false
+  }
+  await page.goto('/providers')
+  await ready(page)
+  await page.getByRole('button', { name: '编辑配置' }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑模型配置' })
+  await dialog.getByLabel('配置名称').fill('Offline configured model')
+  await dialog.getByLabel('模型 ID', { exact: true }).fill('offline-model')
+  await dialog.getByLabel('凭据来源').selectOption('stored')
+  await dialog.getByRole('checkbox', { name: '替换或清空工作空间 API Key' }).check()
+  await dialog.getByLabel('新 API Key').fill('offline-sensitive-test-key')
+  await dialog.getByRole('checkbox', { name: '设为该类型默认配置' }).uncheck()
+  await dialog.getByRole('button', { name: '保存配置', exact: true }).click()
+  await expect(page.getByText('配置已保存为备用，可单独测试。', { exact: true })).toBeVisible()
+  expect(h.writes[0].body.config).toEqual({
+    model: 'offline-model',
+    credential_source: 'stored',
+    embedding_model: 'text-embedding-v4',
+  })
+  expect(h.writes[0].body.api_key).toBe('offline-sensitive-test-key')
+  expect(h.writes[0].body.is_default).toBe(0)
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(
+    'offline-sensitive-test-key',
+  )
+  await page.getByRole('button', { name: '编辑配置' }).click()
+  await dialog.getByRole('checkbox', { name: '替换或清空工作空间 API Key' }).check()
+  await expect(dialog.getByLabel('新 API Key')).toBeEmpty()
 })

@@ -14,6 +14,7 @@ import asyncio
 from typing import Dict, Any, List, Optional
 import httpx
 from app.conf.config import settings
+from app.core.provider_context import active_providers
 
 logger = logging.getLogger("provider_factory")
 
@@ -35,8 +36,10 @@ class QwenLLMClient:
     BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     EMBEDDING_URL = "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
 
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or settings.DASHSCOPE_API_KEY
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None, embedding_model: Optional[str] = None):
+        self.api_key = settings.DASHSCOPE_API_KEY if api_key is None else api_key
+        self.model = model
+        self.embedding_model = embedding_model
 
     async def chat_completion(
         self,
@@ -48,6 +51,7 @@ class QwenLLMClient:
     ) -> Dict[str, Any]:
         """发起千问大语言模型调用；若无 API Key 则自动进入高保真 Mock 模式"""
         start_time = time.time()
+        model = self.model or model
 
         if not self.api_key or self.api_key.strip() == "":
             logger.info("未检测到 DASHSCOPE_API_KEY，切换至 Qwen 高保真 Mock 响应模式")
@@ -96,6 +100,7 @@ class QwenLLMClient:
 
     async def get_embedding(self, text: str, model: str = "text-embedding-v4") -> List[float]:
         """获取文本 Embedding 向量 (使用 DashScope HTTP API)"""
+        model = self.embedding_model or model
         if not self.api_key or self.api_key.strip() == "":
             # 伪归一化向量 (1024 维)
             ensure_mock_allowed()
@@ -202,8 +207,9 @@ class WanxImageClient:
         "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=1200&q=80",
     ]
 
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or settings.WANX_API_KEY or settings.DASHSCOPE_API_KEY
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+        self.api_key = (settings.WANX_API_KEY or settings.DASHSCOPE_API_KEY) if api_key is None else api_key
+        self.model = model
 
     async def generate_images(
         self,
@@ -214,6 +220,7 @@ class WanxImageClient:
     ) -> Dict[str, Any]:
         """同步返回结果文生图任务；无 Key 时自动切换高清商品级 Mock"""
         start_time = time.time()
+        model = self.model or model
 
         if not self.api_key or self.api_key.strip() == "":
             logger.info("未检测到 API_KEY，启用 Qwen Image 高保真 Mock 生图模式")
@@ -304,10 +311,11 @@ class KlingVideoClient:
         "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
     ]
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         # 用户要求替换可灵，所以这里实际是万相视频，为了不改外面代码类名保留不变，或外层可以不依赖类名。
         # 实际调用的已经是 Wan 3.0 API
-        self.api_key = api_key or settings.DASHSCOPE_API_KEY
+        self.api_key = settings.DASHSCOPE_API_KEY if api_key is None else api_key
+        self.model = model
 
     async def generate_video(
         self,
@@ -319,6 +327,7 @@ class KlingVideoClient:
     ) -> Dict[str, Any]:
         """创建文生视频任务；无 Key 时自动切换商品演示 Mock"""
         start_time = time.time()
+        model = self.model or model
 
         if not self.api_key or self.api_key.strip() == "":
             logger.info("未检测到 DASHSCOPE_API_KEY，启用 Wan 3.0 高保真 Mock 视频生成模式")
@@ -405,12 +414,24 @@ class ProviderFactory:
 
     @staticmethod
     def get_llm_client(provider_type: str = "qwen") -> QwenLLMClient:
+        runtime = active_providers.get()
+        binding = runtime.get("llm") if runtime else None
+        if binding:
+            return QwenLLMClient(binding.api_key, binding.model, binding.embedding_model)
         return QwenLLMClient()
 
     @staticmethod
     def get_image_client(provider_type: str = "wanx") -> WanxImageClient:
+        runtime = active_providers.get()
+        binding = runtime.get("image") if runtime else None
+        if binding:
+            return WanxImageClient(binding.api_key, binding.model)
         return WanxImageClient()
 
     @staticmethod
     def get_video_client(provider_type: str = "kling") -> KlingVideoClient:
+        runtime = active_providers.get()
+        binding = runtime.get("video") if runtime else None
+        if binding:
+            return KlingVideoClient(binding.api_key, binding.model)
         return KlingVideoClient()

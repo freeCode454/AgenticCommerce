@@ -42,7 +42,8 @@ async def requirement_analyzer_node(state: AgentState) -> dict:
                 tenant_id=tenant_id, 
                 query_vector=query_vector, 
                 limit=3, 
-                threshold=0.6
+                threshold=0.6,
+                embedding_model=llm_client.embedding_model or "text-embedding-v4",
             )
             if chunks:
                 rag_context = "\n".join([c.content for c in chunks])

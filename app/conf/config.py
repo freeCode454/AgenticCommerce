@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     # 安全配置
     AUTH_ENABLED: bool = True
     SECRET_KEY: str = Field(DEV_SECRET, repr=False)
+    PROVIDER_ENCRYPTION_KEY: str = Field("", repr=False)
     JWT_ALGORITHM: Literal["HS256"] = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -81,6 +82,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_security(self) -> Self:
+        if self.PROVIDER_ENCRYPTION_KEY or self.is_production:
+            from app.core.provider_keys import ProviderConfigurationError, encryption_key
+            try:
+                encryption_key(self.PROVIDER_ENCRYPTION_KEY)
+            except ProviderConfigurationError:
+                raise ValueError("PROVIDER_ENCRYPTION_KEY must contain an independent base64-encoded 32-byte key") from None
         if not self.AUTH_ENABLED:
             raise ValueError("Authentication is required; AUTH_ENABLED must be true")
         if self.is_production:
@@ -88,6 +95,8 @@ class Settings(BaseSettings):
                 raise ValueError("Production requires DEBUG=false and ALLOW_MOCK_ASSETS=false")
             if self.SECRET_KEY == DEV_SECRET or len(self.SECRET_KEY.encode()) < 32:
                 raise ValueError("Production requires an independent SECRET_KEY of at least 32 bytes")
+            if self.PROVIDER_ENCRYPTION_KEY == self.SECRET_KEY:
+                raise ValueError("Provider encryption key must be independent of the JWT signing key")
             if self.POSTGRES_PASSWORD in {"", "postgres"} or self.MINIO_SECRET_KEY in {"", "minioadmin"}:
                 raise ValueError("Production requires independent database and storage credentials")
             if "*" in self.CORS_ORIGINS or "*" in self.TRUSTED_HOSTS:

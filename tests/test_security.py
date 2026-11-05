@@ -57,7 +57,8 @@ def test_expired_access_token_is_rejected():
 def test_production_rejects_unsafe_configuration(overrides):
     config = dict(APP_ENV="prod", DEBUG=False, ALLOW_MOCK_ASSETS=False,
                   AUTH_ENABLED=True, SECRET_KEY="production-test-key-" * 4,
-                  POSTGRES_PASSWORD="synthetic-db-password", MINIO_SECRET_KEY="synthetic-storage-secret")
+                  POSTGRES_PASSWORD="synthetic-db-password", MINIO_SECRET_KEY="synthetic-storage-secret",
+                  PROVIDER_ENCRYPTION_KEY="MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=")
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **{**config, **overrides})
 

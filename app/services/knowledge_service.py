@@ -10,6 +10,8 @@ from app.services.base import BaseService
 from app.models.knowledge import KnowledgeBaseDoc, KnowledgeChunk
 from app.models.base import generate_uuid32
 from app.clients.provider_factory import ProviderFactory
+from app.services.provider_runtime import provider_scope
+from app.repositories.knowledge_repo import embedding_model_filter
 
 logger = logging.getLogger("knowledge_service")
 
@@ -51,14 +53,16 @@ class KnowledgeService(BaseService):
         self.session.add(doc)
 
         # Embedding 计算
-        llm_client = ProviderFactory.get_llm_client()
-        embedding = await llm_client.get_embedding(content)
+        async with provider_scope(tenant_id, self.session, kinds=("llm",)):
+            llm_client = ProviderFactory.get_llm_client()
+            embedding = await llm_client.get_embedding(content)
+            embedding_model = llm_client.embedding_model or "text-embedding-v4"
 
         chunk = KnowledgeChunk(
             id=f"chunk_{generate_uuid32()[:12]}",
             tenant_id=tenant_id, doc_id=doc_id, doc_type=doc_type,
             chunk_index=1, content=content, embedding=embedding,
-            metadata_json={"name": name, "category": category},
+            metadata_json={"name": name, "category": category, "embedding_model": embedding_model},
             created_by=user_id,
         )
         self.session.add(chunk)
@@ -89,12 +93,15 @@ class KnowledgeService(BaseService):
 
     async def vector_search(self, tenant_id: str, query_text: str, top_k: int = 3) -> list:
         """向量相似度检索"""
-        llm_client = ProviderFactory.get_llm_client()
-        q_vec = await llm_client.get_embedding(query_text)
+        async with provider_scope(tenant_id, self.session, kinds=("llm",)):
+            llm_client = ProviderFactory.get_llm_client()
+            q_vec = await llm_client.get_embedding(query_text)
+            embedding_model = llm_client.embedding_model or "text-embedding-v4"
 
         query = (
             select(KnowledgeChunk)
             .where(KnowledgeChunk.tenant_id == tenant_id, KnowledgeChunk.is_deleted == 0, KnowledgeChunk.embedding.is_not(None))
+            .where(embedding_model_filter(embedding_model))
             .order_by(KnowledgeChunk.embedding.cosine_distance(q_vec))
             .limit(top_k)
         )

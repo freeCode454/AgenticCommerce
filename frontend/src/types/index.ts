@@ -115,6 +115,13 @@ export interface Batch {
   create_time?: string
 }
 export interface Provider {
+  configuration_status?: string
+  runtime_status?: string
+  key_status?: string
+  is_active?: boolean
+  runtime_has_key?: boolean
+  adapter?: string
+  effective_config?: Record<string, unknown>
   id: string
   type: string
   name: string

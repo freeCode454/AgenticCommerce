@@ -48,7 +48,9 @@ async def run_agent_workflow_background(task_id: str, tenant_id: str, sku_id: st
         }
 
         logger.info(f"后台异步启动任务: {task_id}")
-        await app_workflow.ainvoke(initial_state)
+        from app.services.provider_runtime import provider_scope
+        async with provider_scope(tenant_id):
+            await app_workflow.ainvoke(initial_state)
         logger.info(f"后台任务 {task_id} 顺利执行完成")
     except Exception as e:
         logger.error("Workflow failed: task_id=%s, error=%s", task_id, type(e).__name__)

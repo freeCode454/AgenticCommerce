@@ -2,18 +2,28 @@
 import json
 from pathlib import Path
 import secrets
+from dotenv import dotenv_values
+from app.core.provider_keys import encryption_key, new_encryption_key
 
 
 def setup_local() -> None:
     root = Path(__file__).resolve().parents[2]
     path = root / ".env.local"
     if path.exists():
+        current = dotenv_values(path).get("PROVIDER_ENCRYPTION_KEY")
+        if current:
+            encryption_key(current)
+        else:
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write("\nPROVIDER_ENCRYPTION_KEY=" + new_encryption_key() + "\n")
+            print("Added an independent provider encryption key to existing .env.local.")
         print("Using existing .env.local; credentials were not changed.")
         return
     values = {
         "APP_ENV": "dev", "APP_HOST": "127.0.0.1", "APP_PORT": "8002",
         "FRONTEND_PORT": "5174", "DEBUG": "false", "AUTH_ENABLED": "true",
         "SECRET_KEY": secrets.token_urlsafe(48),
+        "PROVIDER_ENCRYPTION_KEY": new_encryption_key(),
         "POSTGRES_HOST": "127.0.0.1", "POSTGRES_PORT": "5435",
         "POSTGRES_USER": "agentic", "POSTGRES_PASSWORD": secrets.token_urlsafe(32),
         "POSTGRES_DB": "agentic_commerce", "REDIS_PORT": "6381",

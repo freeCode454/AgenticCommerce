@@ -83,6 +83,7 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-agentic-assets}
       AUTH_ENABLED: "true"
+      PROVIDER_ENCRYPTION_KEY: ${PROVIDER_ENCRYPTION_KEY:-}
       ALLOW_MOCK_ASSETS: "false"
       APP_ENV: prod
     ports:

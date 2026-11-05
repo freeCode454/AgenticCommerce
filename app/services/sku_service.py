@@ -45,7 +45,9 @@ class SkuService(BaseService):
         final_specs = specs or {}
         if not final_specs and description and description.strip():
             try:
-                extracted = await self.extract_specs(description)
+                from app.services.provider_runtime import provider_scope
+                async with provider_scope(tenant_id, self.session, kinds=("llm",)):
+                    extracted = await self.extract_specs(description)
                 if extracted.get("specs"):
                     final_specs = extracted.get("specs")
                     logger.info(f"保存 SKU {code} 时自动触发大模型抽取补全 specs: {final_specs}")

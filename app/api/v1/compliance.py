@@ -51,8 +51,11 @@ async def get_report_detail(
 @router.post("/check")
 async def run_compliance_check(
     req: ComplianceCheckRequest,
+    db: AsyncSession = Depends(get_db),
     user_tenant: dict = Depends(get_current_user_and_tenant),
 ):
     """一键实时合规筛查接口 (检测广告法、绝对化词汇、侵权违禁词)"""
-    result = await ComplianceService.run_realtime_check(req.title, req.content, req.target_platform)
+    from app.services.provider_runtime import provider_scope
+    async with provider_scope(user_tenant["tenant_id"], db, kinds=("llm",)):
+        result = await ComplianceService.run_realtime_check(req.title, req.content, req.target_platform)
     return {"code": 200, "data": result, "message": "合规检测完毕"}

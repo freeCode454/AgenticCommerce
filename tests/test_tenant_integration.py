@@ -148,3 +148,234 @@ async def test_editing_copy_invalidates_previous_approval(context):
     await context["session"].refresh(report)
     assert report.passed == 0 and report.status == "outdated"
     assert (await context["client"].post("/api/v1/packages/export",json={"task_id":context["task"]})).status_code == 409
+
+
+@pytest_asyncio.fixture
+async def provider_context(context, monkeypatch):
+    from app.models.provider import Provider
+    from app.core.provider_keys import encrypt_api_key, new_encryption_key
+    key = new_encryption_key()
+    monkeypatch.setattr(settings, "PROVIDER_ENCRYPTION_KEY", key)
+    rows=[]
+    for tenant,secret,default in [(context["tenant_a"],"offline-tenant-a-key",1),(context["tenant_a"],"offline-standby-key",0),(context["tenant_b"],"offline-tenant-b-key",1)]:
+        ident=uuid.uuid4().hex
+        rows.append(Provider(id=ident,tenant_id=tenant,type="llm",name="Offline provider",api_key_enc=encrypt_api_key(secret,tenant,ident,key),config={"model":"offline-"+secret,"credential_source":"stored","embedding_model":"offline-embedding"},is_default=default))
+    context["session"].add_all(rows)
+    await context["session"].flush()
+    return {**context,"default":rows[0],"standby":rows[1],"other":rows[2],"master":key}
+
+
+async def test_provider_key_write_is_encrypted_and_api_never_returns_secrets(provider_context):
+    from app.core.provider_keys import decrypt_api_key
+    ctx=provider_context
+    secret="offline-new-sensitive-api-key"
+    result=await ctx["client"].put('/api/v1/providers/'+ctx["default"].id,json={"api_key":secret})
+    assert result.status_code==200
+    await ctx["session"].refresh(ctx["default"])
+    ciphertext=ctx["default"].api_key_enc
+    assert secret not in ciphertext
+    assert decrypt_api_key(ciphertext,ctx["tenant_a"],ctx["default"].id,ctx["master"])==secret
+    listing=await ctx["client"].get('/api/v1/providers')
+    assert listing.status_code==200 and secret not in listing.text and ciphertext not in listing.text
+    items=listing.json()["data"]["items"]
+    assert len(items)==2
+    assert all(item["key_status"]=="encrypted" for item in items)
+
+
+async def test_default_switch_does_not_modify_other_tenant_and_clear_never_falls_back(provider_context, monkeypatch):
+    from app.services.provider_runtime import provider_scope
+    from app.clients.provider_factory import ProviderFactory
+    ctx=provider_context
+    response=await ctx["client"].put('/api/v1/providers/'+ctx["standby"].id,json={"is_default":1})
+    assert response.status_code==200
+    for name in ['default','standby','other']:await ctx["session"].refresh(ctx[name])
+    assert (ctx['default'].is_default,ctx['standby'].is_default,ctx['other'].is_default)==(0,1,1)
+    async with provider_scope(ctx['tenant_a'],ctx['session']):
+        assert ProviderFactory.get_llm_client().api_key=='offline-standby-key'
+    response=await ctx['client'].put('/api/v1/providers/'+ctx['standby'].id,json={'api_key':''})
+    assert response.status_code==200
+    monkeypatch.setattr(settings,'DASHSCOPE_API_KEY','offline-server-key')
+    async with provider_scope(ctx['tenant_a'],ctx['session']):
+        assert ProviderFactory.get_llm_client().api_key==''
+    assert (await ctx['client'].post('/api/v1/providers/'+ctx['standby'].id+'/test')).status_code==503
+
+
+@pytest.mark.parametrize('operation',['put','post'])
+async def test_provider_write_and_test_reject_other_tenant(provider_context,operation):
+    ctx=provider_context
+    path='/api/v1/providers/'+ctx['other'].id+('/test' if operation=='post' else '')
+    result=await getattr(ctx['client'],operation)(path,**({'json':{'api_key':'offline-stolen'}} if operation=='put' else {}))
+    assert result.status_code==404
+
+
+@pytest.mark.parametrize('operation',['put','post'])
+async def test_operator_cannot_edit_or_test_provider(provider_context,operation):
+    ctx=provider_context
+    token=create_access_token({'user_id':ctx['operator'],'tenant_id':ctx['tenant_a']})
+    path='/api/v1/providers/'+ctx['default'].id+('/test' if operation=='post' else '')
+    result=await getattr(ctx['client'],operation)(path,headers={'Authorization':'Bearer '+token},**({'json':{'api_key':'offline-key'}} if operation=='put' else {}))
+    assert result.status_code==403
+
+
+async def test_provider_test_uses_selected_standby_not_default(provider_context,monkeypatch):
+    from app.clients.provider_factory import QwenLLMClient
+    ctx=provider_context
+    observed=[]
+    async def fake(self,*args,**kwargs):
+        observed.append((self.api_key,self.model))
+        return {'content':'OK','is_mock':0,'model':self.model,'elapsed_ms':7}
+    monkeypatch.setattr(QwenLLMClient,'chat_completion',fake)
+    result=await ctx['client'].post('/api/v1/providers/'+ctx['standby'].id+'/test')
+    assert result.status_code==200
+    assert observed==[('offline-standby-key',ctx['standby'].config['model'])]
+    assert result.json()['data']['provider_id']==ctx['standby'].id
+
+
+async def test_legacy_secret_is_masked_then_encrypted_on_save(provider_context):
+    from app.models.provider import Provider
+    ctx=provider_context
+    secret='offline-legacy-plaintext-key'
+    legacy=Provider(id=uuid.uuid4().hex,tenant_id=ctx['tenant_a'],type='image',name='Legacy image',api_key_enc=secret,config={'model':'old-image-model','api_key':'offline-json-secret'},is_default=1)
+    ctx['session'].add(legacy);await ctx['session'].flush()
+    listed=await ctx['client'].get('/api/v1/providers')
+    assert secret not in listed.text and 'offline-json-secret' not in listed.text
+    entry=next(item for item in listed.json()['data']['items'] if item['id']==legacy.id)
+    assert entry['configuration_status']=='pending' and entry['key_status']=='legacy'
+    assert (await ctx['client'].post('/api/v1/providers/'+legacy.id+'/test')).status_code==503
+    saved=await ctx['client'].put('/api/v1/providers/'+legacy.id,json={'config':{'model':'qwen-image-3.0-pro','credential_source':'stored'}})
+    assert saved.status_code==200
+    await ctx['session'].refresh(legacy)
+    assert legacy.api_key_enc.startswith('enc:v1:') and secret not in legacy.api_key_enc
+
+
+async def test_invalid_requests_do_not_echo_credentials(provider_context):
+    ctx=provider_context
+    secret='offline-sensitive-'*20
+    for payload in [{'api_key':secret},{'api_key':{'private_value':secret}},{'api_key':'short-key','is_default':True}]:
+        result=await ctx['client'].put('/api/v1/providers/'+ctx['default'].id,json=payload)
+        assert result.status_code in [422,503]
+        assert secret not in result.text
+    rejected=await ctx['client'].put('/api/v1/providers/'+ctx['default'].id,json={'config':{'model':'m','credential_source':'stored','api_key':secret}})
+    assert rejected.status_code==503 and secret not in rejected.text
+
+
+@pytest.mark.parametrize('path,payload',[
+    ('/api/v1/skus/extract-specs',{'description':'A ceramic mug'}),
+    ('/api/v1/compliance/check',{'title':'Ceramic Mug','content':'A mug with known facts'}),
+    ('/api/v1/skus',{'code':'OFFLINE-AUTO','name':'Ceramic Mug','category':'home','description':'A ceramic mug','specs':{}}),
+])
+async def test_authenticated_model_operations_bind_tenant_provider(provider_context,monkeypatch,path,payload):
+    import json
+    from app.clients.provider_factory import QwenLLMClient
+    ctx=provider_context
+    observed=[]
+    async def fake(self,*args,**kwargs):
+        observed.append((self.api_key,self.model))
+        result={'score':95,'passed':1,'violations':[],'suggestions':[]} if 'compliance' in path else {'material':'ceramic'}
+        return {'content':json.dumps(result),'is_mock':0,'model':self.model}
+    monkeypatch.setattr(QwenLLMClient,'chat_completion',fake)
+    result=await ctx['client'].post(path,json=payload)
+    assert result.status_code==200
+    assert observed==[('offline-tenant-a-key',ctx['default'].config['model'])]
+
+
+async def test_knowledge_index_and_query_use_tenant_embedding_configuration(provider_context,monkeypatch):
+    from app.clients.provider_factory import QwenLLMClient
+    ctx=provider_context
+    observed=[]
+    async def fake(self,*args,**kwargs):
+        observed.append((self.api_key,self.embedding_model))
+        return [0.01]*1024
+    monkeypatch.setattr(QwenLLMClient,'get_embedding',fake)
+    created=await ctx['client'].post('/api/v1/knowledge/docs',json={'name':'Offline doc','category':'brand','doc_type':'brand','content':'Verified brand facts'})
+    queried=await ctx['client'].post('/api/v1/knowledge/query',json={'query_text':'brand facts','top_k':1})
+    assert created.status_code==queried.status_code==200
+    assert observed==[('offline-tenant-a-key','offline-embedding')]*2
+
+
+async def test_background_workflow_has_independent_tenant_snapshot(provider_context,monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from app.agent import graph
+    from app.api.v1.tasks import run_agent_workflow_background
+    from app.clients import postgres
+    from app.clients.provider_factory import ProviderFactory
+    from app.services import provider_runtime
+    ctx=provider_context
+    observed=[]
+    @asynccontextmanager
+    async def session():yield ctx['session']
+    async def execute(state):
+        observed.append((ProviderFactory.get_llm_client().api_key,state['tenant_id']))
+        return {}
+    monkeypatch.setattr(postgres,'AsyncSessionLocal',session)
+    monkeypatch.setattr(provider_runtime,'AsyncSessionLocal',session)
+    monkeypatch.setattr(graph,'app_workflow',SimpleNamespace(ainvoke=AsyncMock(side_effect=execute)))
+    await run_agent_workflow_background(ctx['task'],ctx['tenant_a'],ctx['sku_a'],{'media_type':'both'})
+    assert observed==[('offline-tenant-a-key',ctx['tenant_a'])]
+
+
+async def test_bad_image_key_does_not_block_llm_only_operation(provider_context,monkeypatch):
+    from app.models.provider import Provider
+    from app.clients.provider_factory import QwenLLMClient
+    ctx=provider_context
+    ctx['session'].add(Provider(id=uuid.uuid4().hex,tenant_id=ctx['tenant_a'],type='image',name='Invalid image config',api_key_enc='enc:v1:unreadable',config={'model':'image-model','credential_source':'stored'},is_default=1))
+    await ctx['session'].flush()
+    async def fake(self,*args,**kwargs):return {'content':'{"material":"ceramic"}','is_mock':0}
+    monkeypatch.setattr(QwenLLMClient,'chat_completion',fake)
+    result=await ctx['client'].post('/api/v1/skus/extract-specs',json={'description':'A ceramic mug'})
+    assert result.status_code==200
+
+
+async def test_legacy_key_migration_is_scoped_idempotent_and_does_not_activate(provider_context,monkeypatch):
+    from contextlib import asynccontextmanager
+    from app.models.provider import Provider
+    from app.scripts import encrypt_provider_keys
+    ctx=provider_context
+    rows=[Provider(id=uuid.uuid4().hex,tenant_id=tenant,type='video',name='Old config',api_key_enc='offline-legacy-key',config={'model':'old-model'},is_default=1) for tenant in [ctx['tenant_a'],ctx['tenant_b']]]
+    ctx['session'].add_all(rows);await ctx['session'].flush()
+    @asynccontextmanager
+    async def session():yield ctx['session']
+    monkeypatch.setattr(encrypt_provider_keys,'AsyncSessionLocal',session)
+    assert await encrypt_provider_keys.migrate_keys(ctx['tenant_a'])==1
+    assert rows[0].api_key_enc=='offline-legacy-key'
+    assert await encrypt_provider_keys.migrate_keys(ctx['tenant_a'],apply=True)==1
+    assert await encrypt_provider_keys.migrate_keys(ctx['tenant_a'],apply=True)==0
+    assert rows[0].api_key_enc.startswith('enc:v1:')
+    assert rows[1].api_key_enc=='offline-legacy-key'
+    assert rows[0].config=={'model':'old-model'}
+
+
+async def test_saving_model_without_replacing_key_preserves_ciphertext(provider_context):
+    from app.services.provider_runtime import provider_scope
+    from app.clients.provider_factory import ProviderFactory
+    ctx=provider_context
+    ciphertext=ctx['default'].api_key_enc
+    result=await ctx['client'].put('/api/v1/providers/'+ctx['default'].id,json={'config':{'model':'updated-model','credential_source':'stored','embedding_model':'updated-embedding'}})
+    assert result.status_code==200
+    await ctx['session'].refresh(ctx['default'])
+    assert ctx['default'].api_key_enc==ciphertext
+    async with provider_scope(ctx['tenant_a'],ctx['session']):
+        client=ProviderFactory.get_llm_client()
+        assert (client.model,client.embedding_model,client.api_key)==('updated-model','updated-embedding','offline-tenant-a-key')
+
+
+async def test_embedding_model_change_does_not_mix_old_and_new_vectors(provider_context,monkeypatch):
+    from app.models.knowledge import KnowledgeBaseDoc,KnowledgeChunk
+    from app.clients.provider_factory import QwenLLMClient
+    from app.repositories.knowledge_repo import KnowledgeRepository
+    from app.services.knowledge_service import KnowledgeService
+    ctx=provider_context
+    doc=KnowledgeBaseDoc(id=uuid.uuid4().hex,tenant_id=ctx['tenant_a'],category='brand',doc_type='brand',name='Offline vectors',vector_status='indexed')
+    ctx['session'].add(doc);await ctx['session'].flush()
+    for model in [None,'text-embedding-v4','offline-embedding']:
+        ctx['session'].add(KnowledgeChunk(id=uuid.uuid4().hex,tenant_id=ctx['tenant_a'],doc_id=doc.id,doc_type='brand',chunk_index=1,content=model or 'legacy-v4',embedding=[0.01]*1024,metadata_json={} if model is None else {'embedding_model':model}))
+    await ctx['session'].flush()
+    async def fake(self,*args,**kwargs):return [0.01]*1024
+    monkeypatch.setattr(QwenLLMClient,'get_embedding',fake)
+    matches=await KnowledgeService(ctx['session']).vector_search(ctx['tenant_a'],'facts',10)
+    assert [item['content'] for item in matches]==['offline-embedding']
+    repo=KnowledgeRepository(ctx['session'])
+    matches=await repo.search_vectors(ctx['tenant_a'],[0.01]*1024,limit=10,embedding_model='text-embedding-v4')
+    assert {item.content for item in matches}=={'legacy-v4','text-embedding-v4'}

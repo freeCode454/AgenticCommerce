@@ -77,7 +77,9 @@ async def extract_sku_specs(
         raise HTTPException(status_code=400, detail="描述内容不能为空")
 
     svc = SkuService(db)
-    result = await svc.extract_specs(req.description)
+    from app.services.provider_runtime import provider_scope
+    async with provider_scope(user_tenant["tenant_id"], db, kinds=("llm",)):
+        result = await svc.extract_specs(req.description)
     return {
         "code": 200,
         "data": result.get("specs", {}),
