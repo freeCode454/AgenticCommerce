@@ -34,6 +34,7 @@ export interface GenerationConfig {
   max_retries: number
 }
 export interface Task {
+  next_poll_at?: string
   execution_id?: string
   error_message?: string
   id: string
@@ -102,6 +103,17 @@ export interface NodeRun {
   create_time?: string
 }
 export interface TaskDetail {
+  remote_jobs?: {
+    id: string
+    remote_id?: string
+    round: number
+    status: string
+    remote_status?: string
+    model: string
+    error_message?: string
+    billing_status?: string
+    expires_at?: string
+  }[]
   task: Task
   copy?: CopyContent | null
   assets: Asset[]
@@ -169,6 +181,7 @@ export interface Listing {
   create_time?: string
 }
 export interface CostSummary {
+  unreported_video_jobs?: number
   total_runs: number
   total_prompt_tokens: number
   total_completion_tokens: number

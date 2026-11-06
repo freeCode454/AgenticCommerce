@@ -8,7 +8,7 @@ from app.clients.postgres import AsyncSessionLocal
 from app.models.task_node_run import TaskNodeRun
 from app.models.task import Task
 from app.api.v1.ws import ws_manager
-from sqlalchemy import update
+from sqlalchemy import select, update
 from app.core.task_execution import fence_execution
 
 logger = logging.getLogger("agent_recorder")
@@ -25,6 +25,7 @@ async def record_node_execution(
     input_data: Optional[Dict[str, Any]] = None,
     output_data: Optional[Dict[str, Any]] = None,
     progress: int = 0,
+    provider_job_id: Optional[str] = None,
 ):
     """持久化保存节点运行快照，并向前端工作台广播实时进度"""
     payload = {
@@ -42,7 +43,15 @@ async def record_node_execution(
         try:
             async with AsyncSessionLocal() as session:
                 execution_id = await fence_execution(session, tenant_id=tenant_id, task_id=task_id)
+                if provider_job_id:
+                    previous = (await session.execute(select(TaskNodeRun).where(
+                        TaskNodeRun.provider_job_id == provider_job_id, TaskNodeRun.tenant_id == tenant_id,
+                        TaskNodeRun.task_id == task_id, TaskNodeRun.execution_id == execution_id,
+                    ))).scalar_one_or_none()
+                    if previous:
+                        return  # Recovered video success must not duplicate recorded cost.
                 node_run = TaskNodeRun(
+                    provider_job_id=provider_job_id,
                     execution_id=execution_id,
                     tenant_id=tenant_id or "tenant_default",
                     task_id=task_id,

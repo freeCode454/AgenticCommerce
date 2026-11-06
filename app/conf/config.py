@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     TASK_WORKER_CONCURRENCY: int = Field(2, ge=1, le=8)
     TASK_WORKER_POLL_SECONDS: float = Field(1.0, ge=0.1, le=30)
     TASK_WORKER_HEARTBEAT_SECONDS: float = Field(2.0, ge=0.1, le=15)
+    VIDEO_POLL_SECONDS: float = Field(15.0, ge=1, le=300)
+    DASHSCOPE_VIDEO_API_BASE: str = "https://dashscope.aliyuncs.com/api/v1"
     BOOTSTRAP_ADMIN_EMAIL: str = "admin@agentic.com"
     BOOTSTRAP_ADMIN_PASSWORD: str = Field("", repr=False)
 

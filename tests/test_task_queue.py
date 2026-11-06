@@ -28,6 +28,7 @@ from app.models import (
     Batch,
     ComplianceReport,
     Copy,
+    ProviderJob,
     Sku,
     Task,
     TaskExecution,
@@ -41,7 +42,7 @@ from app.services.task_worker import INTERRUPTED, TaskWorker
 
 
 @pytest_asyncio.fixture
-async def queue_db():
+async def queue_db(monkeypatch):
     if os.getenv("RUN_DB_TESTS") != "1":
         pytest.skip("Requires RUN_DB_TESTS=1 and a disposable *_test database")
     assert settings.APP_ENV in {"dev", "test"} and settings.POSTGRES_DB.endswith(
@@ -49,6 +50,14 @@ async def queue_db():
     )
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
+    from app.core.provider_keys import new_encryption_key
+    from app.services import remote_video, workflow_checkpoint
+
+    monkeypatch.setattr(settings, "PROVIDER_ENCRYPTION_KEY", new_encryption_key())
+    monkeypatch.setattr(settings, "DASHSCOPE_API_KEY", "offline-queue-key")
+    monkeypatch.setattr(settings, "WANX_API_KEY", "offline-queue-image-key")
+    monkeypatch.setattr(remote_video, "AsyncSessionLocal", sessions)
+    monkeypatch.setattr(workflow_checkpoint, "AsyncSessionLocal", sessions)
     a, b, sku_a, sku_b = (uuid4().hex for _ in range(4))
     async with sessions() as session:
         session.add_all(
@@ -83,6 +92,7 @@ async def queue_db():
             for tenant_id in (a, b):
                 for model in (
                     TaskNodeRun,
+                    ProviderJob,
                     Copy,
                     Asset,
                     ComplianceReport,
@@ -650,7 +660,7 @@ async def test_durable_worker_runs_full_stub_workflow_and_persists_current_outpu
         video_generator,
     )
     from app.clients import postgres
-    from app.clients.provider_factory import ProviderFactory
+    from app.clients.provider_factory import KlingVideoClient, ProviderFactory
     from app.services import provider_runtime, task_worker
 
     ctx = queue_db
@@ -670,7 +680,18 @@ async def test_durable_worker_runs_full_stub_workflow_and_persists_current_outpu
             "video_storyboard",
         )
     }
-    llm, images, video = AsyncMock(), AsyncMock(), AsyncMock()
+    llm, images = AsyncMock(), AsyncMock()
+    video = KlingVideoClient(api_key="offline-video-key", model="wan3.0-video")
+    video.submit_video = AsyncMock(
+        return_value={"task_id": "offline-remote-video", "task_status": "PENDING"}
+    )
+    video.query_video = AsyncMock(
+        return_value={
+            "task_id": "offline-remote-video",
+            "task_status": "SUCCEEDED",
+            "video_url": "https://assets.example.test/mug.mp4",
+        }
+    )
     llm.chat_completion.side_effect = [
         {"content": json.dumps(value), "is_mock": 0, "cost": 0.001}
         for value in (
@@ -683,11 +704,6 @@ async def test_durable_worker_runs_full_stub_workflow_and_persists_current_outpu
         "urls": ["https://assets.example.test/mug.png"],
         "is_mock": 0,
         "cost": 0.002,
-    }
-    video.generate_video.return_value = {
-        "video_url": "https://assets.example.test/mug.mp4",
-        "is_mock": 0,
-        "cost": 0.01,
     }
     for module in (
         task_worker,
@@ -717,6 +733,7 @@ async def test_durable_worker_runs_full_stub_workflow_and_persists_current_outpu
         )
         assert len([node for node in nodes if node["status"] == "running"]) == 7
         assert len([node for node in nodes if node["status"] == "success"]) == 6
-        assert sum(node["cost"] for node in nodes) == pytest.approx(0.019)
+        assert sum(node["cost"] for node in nodes) == pytest.approx(0.009)
     images.generate_images.assert_awaited()
-    video.generate_video.assert_awaited_once()
+    video.submit_video.assert_awaited_once()
+    video.query_video.assert_awaited_once()

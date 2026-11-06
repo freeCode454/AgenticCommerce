@@ -7,12 +7,14 @@ AI 模型厂商工厂 (支持 LLM / 生图 / 生视频 厂商插件化切换与�
 - 阿里百炼 / Wan 3.0 Video: https://help.aliyun.com/zh/model-studio/developer-reference/video-generation
 """
 
-import os
-import time
-import logging
 import asyncio
-from typing import Dict, Any, List, Optional
+import logging
+import time
+from typing import Any, Dict, List, Optional
+
 import httpx
+
+from app.clients.wan_video import VideoProviderError, WanVideoTransport
 from app.conf.config import settings
 from app.core.provider_context import active_providers
 from app.core.task_execution import guard_model_request
@@ -302,7 +304,7 @@ class WanxImageClient:
 # ──────────────────────────────────────────────────────────────────────────────
 # 3. 万相 Wan 3.0 Video 生视频客户端
 # ──────────────────────────────────────────────────────────────────────────────
-class KlingVideoClient:
+class KlingVideoClient(WanVideoTransport):
     """通义万相 Wan 3.0 Video 生视频客户端"""
 
     SUBMIT_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis"
@@ -315,85 +317,29 @@ class KlingVideoClient:
         "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
     ]
 
-    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
-        # 用户要求替换可灵，所以这里实际是万相视频，为了不改外面代码类名保留不变，或外层可以不依赖类名。
-        # 实际调用的已经是 Wan 3.0 API
-        self.api_key = settings.DASHSCOPE_API_KEY if api_key is None else api_key
-        self.model = model
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None, api_base: Optional[str] = None):
+        super().__init__(settings.DASHSCOPE_API_KEY if api_key is None else api_key, model, api_base)
 
     async def generate_video(
-        self,
-        prompt: str,
-        duration: int = 5,
-        aspect_ratio: str = "16:9",
-        model: str = "wan3.0-video",
-        image_url: Optional[str] = None,
+        self, prompt: str, duration: int = 5, aspect_ratio: str = "16:9",
+        model: str = "wan3.0-video", image_url: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """创建文生视频任务；无 Key 时自动切换商品演示 Mock"""
+        """Compatibility helper; task executions use the durable submission/query service."""
         await guard_model_request()
-        start_time = time.time()
-        model = self.model or model
-
-        if not self.api_key or self.api_key.strip() == "":
-            logger.info("未检测到 DASHSCOPE_API_KEY，启用 Wan 3.0 高保真 Mock 视频生成模式")
-            return self._mock_generate_video(prompt, duration, aspect_ratio, model)
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "X-DashScope-Async": "enable"
-        }
-        # 将比例转换为 adaptive (Wan 3.0 支持 adaptive 适配)
-        payload = {
-            "model": model,
-            "input": {"prompt": prompt},
-            "parameters": {
-                "resolution": "480P", 
-                "ratio": "adaptive", 
-                "duration": duration
-            }
-        }
-        # 如果是图生视频，可以添加 image 字段 (如 API 支持)
-        if image_url:
-            payload["input"]["image_url"] = image_url
-
+        if not self.api_key:
+            return self._mock_generate_video(prompt, duration, aspect_ratio, self.model or model)
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(self.SUBMIT_URL, headers=headers, json=payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    task_id = data.get("output", {}).get("task_id")
-                    logger.info(f"Wan 3.0 视频任务已提交，TaskID: {task_id}，正在等待视频处理...")
-
-                    # 轮询查询视频任务 (视频生成比较慢，可能需要几分钟，此处简化轮询)
-                    for _ in range(60):
-                        await asyncio.sleep(5)
-                        query_resp = await client.get(
-                            self.TASK_URL.format(task_id=task_id),
-                            headers={"Authorization": f"Bearer {self.api_key}"},
-                        )
-                        if query_resp.status_code == 200:
-                            q_data = query_resp.json()
-                            status = q_data.get("output", {}).get("task_status")
-                            if status == "SUCCEEDED":
-                                video_url = q_data["output"]["video_url"]
-                                elapsed_ms = int((time.time() - start_time) * 1000)
-                                return {
-                                    "video_url": video_url,
-                                    "task_id": task_id,
-                                    "duration": duration,
-                                    "elapsed_ms": elapsed_ms,
-                                    "cost": 0.50,
-                                    "is_mock": 0,
-                                    "model": model,
-                                }
-                            elif status in ["FAILED", "CANCELED"]:
-                                logger.warning("Video generation failed (%s)", status)
-                                break
-        except Exception as e:
-            logger.error("Video API failed (%s)", type(e).__name__)
-
-        return self._mock_generate_video(prompt, duration, aspect_ratio, model)
+            submitted = await self.submit_video(prompt, duration, aspect_ratio, model, image_url)
+            for _ in range(60):
+                result = await self.query_video(submitted["task_id"])
+                if result["task_status"] == "SUCCEEDED":
+                    return {**result, "duration": duration, "aspect_ratio": aspect_ratio}
+                if result["task_status"] not in ("PENDING", "RUNNING"):
+                    raise VideoProviderError("远端视频任务未成功，请检查厂商任务记录。")
+                await asyncio.sleep(5)
+            raise VideoProviderError("视频查询等待超时；远端任务可能仍在生成，未重新提交。")
+        except VideoProviderError as error:
+            raise ProviderCallError(str(error)) from None
 
     def _mock_generate_video(self, prompt: str, duration: int, aspect_ratio: str, model: str) -> Dict[str, Any]:
         """返回高质量演示视频链接与分镜元数据"""
@@ -438,5 +384,5 @@ class ProviderFactory:
         runtime = active_providers.get()
         binding = runtime.get("video") if runtime else None
         if binding:
-            return KlingVideoClient(binding.api_key, binding.model)
+            return KlingVideoClient(binding.api_key, binding.model, binding.api_base)
         return KlingVideoClient()

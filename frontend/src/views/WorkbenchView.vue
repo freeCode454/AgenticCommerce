@@ -34,6 +34,17 @@ const tab = ref('copy'),
   selected = ref(''),
   retrying = ref(false)
 const retryKey = createSubmissionKey()
+const remoteStatuses: Record<string, string> = {
+  submitting: '正在提交',
+  submitted: '已提交',
+  pending: '排队中',
+  running: '生成中',
+  succeeded: '已生成',
+  failed: '生成失败',
+  canceled: '已取消',
+  unknown: '已过期或不可查询',
+  submission_unknown: '提交结果待核实',
+}
 const steps = [
   { key: 'orchestrator', name: '任务准备' },
   { key: 'requirement_analyzer', name: '需求分析' },
@@ -183,6 +194,31 @@ function openNode(key: string) {
           个节点完成状态。图片与视频生成可能需要较长时间。
         </span>
       </div>
+      <section
+        v-if="detail.remote_jobs?.length"
+        class="panel remote-video mb-5"
+        aria-label="远端视频任务"
+      >
+        <h2>视频生成状态</h2>
+        <p v-if="running && detail.task.next_poll_at" class="subtle">
+          视频已提交，服务恢复后会继续查询已有任务，跳过文案和图片生成。 下次查询：{{
+            dateText(detail.task.next_poll_at)
+          }}
+        </p>
+        <p class="subtle">视频费用尚未从厂商账单核实，未计入当前费用合计。</p>
+        <div v-for="job in detail.remote_jobs" :key="job.id" class="form-section">
+          <div class="row wrap">
+            <span>第 {{ job.round }} 轮 · {{ job.model }}</span>
+            <span class="tag">{{ remoteStatuses[job.status] || '查询状态待核实' }}</span>
+          </div>
+          <p v-if="job.error_message" class="form-error" role="status">{{ job.error_message }}</p>
+          <details v-if="job.remote_id" class="spaced">
+            <summary>核对厂商任务</summary>
+            <p class="break-word">任务 ID：{{ job.remote_id }}</p>
+            <p class="subtle">如需核对生成结果或费用，可使用此 ID 在厂商控制台查询。</p>
+          </details>
+        </div>
+      </section>
       <div class="workbench-layout">
         <aside class="node-list">
           <h2>创作流程</h2>
@@ -390,3 +426,14 @@ function openNode(key: string) {
     </PageState>
   </AppDialog>
 </template>
+
+<style scoped>
+.remote-video {
+  padding: 22px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.remote-video p {
+  overflow-wrap: anywhere;
+}
+</style>

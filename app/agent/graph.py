@@ -17,7 +17,9 @@ from app.agent.nodes.video_generator import video_generator_node
 from app.agent.nodes.visual_designer import visual_designer_node
 from app.agent.recorder import record_node_execution
 from app.agent.state import AgentState
+from app.clients.wan_video import RemoteVideoPending
 from app.core.task_execution import active_execution
+from app.services.workflow_checkpoint import checkpoint_node, frozen_provider_scope
 
 logger = logging.getLogger("agent_graph")
 
@@ -47,11 +49,21 @@ def observed_node(name, function):
     async def execute(state: AgentState):
         if active_execution.get() is None:
             return await function(state)
+        await checkpoint_node(name, state)
         await record_node_execution(
             task_id=state["task_id"], tenant_id=state["tenant_id"], node_name=name, status="running",
         )
         try:
-            return await function(state)
+            if state.get("resume_node"):
+                kind = "image" if name == "image_generator" else ("video" if name == "video_generator" else "llm")
+                async with frozen_provider_scope(kind):
+                    result = await function(state)
+            else:
+                result = await function(state)
+            await checkpoint_node(name, state, result)
+            return result
+        except RemoteVideoPending:
+            raise
         except Exception as error:
             from app.core.generation import GenerationOutputError
             await record_node_execution(
@@ -61,6 +73,13 @@ def observed_node(name, function):
             )
             raise
     return execute
+
+
+def entry_node(state: AgentState):
+    entry = state.get("resume_node", "orchestrator")
+    if entry not in ("orchestrator", "video_generator", "quality_reviewer"):
+        raise ValueError("Unsupported workflow recovery boundary")
+    return entry
 
 
 def build_workflow():
@@ -77,7 +96,9 @@ def build_workflow():
         builder.add_node(name, observed_node(name, node))
 
     # 2. 编排线性拓扑流水线
-    builder.add_edge(START, "orchestrator")
+    builder.add_conditional_edges(START, entry_node, {name: name for name in (
+        "orchestrator", "video_generator", "quality_reviewer",
+    )})
     builder.add_edge("orchestrator", "requirement_analyzer")
     builder.add_edge("requirement_analyzer", "creative_planner")
     builder.add_edge("creative_planner", "visual_designer")

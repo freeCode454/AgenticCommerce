@@ -77,6 +77,15 @@ function viewRecord(record: OperationLog) {
     <AppIcon name="info" :size="18" />
     <span>费用为执行记录的预估汇总，最终账单以模型服务商为准。当前尚无可靠的分模型费用明细。</span>
   </div>
+  <div v-if="cost?.unreported_video_jobs" class="notice notice-warning mb-5">
+    <AppIcon name="info" :size="18" />
+    <span>
+      {{
+        cost.unreported_video_jobs
+      }}
+      个视频任务尚无可靠费用数据，费用合计未包含这些任务，请以厂商账单为准。
+    </span>
+  </div>
   <div class="section-heading">
     <div>
       <h2>操作记录</h2>

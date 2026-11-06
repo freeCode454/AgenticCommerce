@@ -564,3 +564,77 @@ test('模型编辑可选择工作空间凭据，关闭后清除输入密钥', as
   await dialog.getByRole('checkbox', { name: '替换或清空工作空间 API Key' }).check()
   await expect(dialog.getByLabel('新 API Key')).toBeEmpty()
 })
+
+for (const width of [1440, 360]) {
+  test(`远端视频恢复状态与未知费用提示，${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    const h = await setup(page, { status: 'running' })
+    const remoteId = 'remote-task-'.repeat(11)
+    let expired = false
+    h.handler = async (route, path) => {
+      if (path === '/tasks/task-1') {
+        await route.fulfill({
+          json: {
+            code: 200,
+            data: {
+              task: {
+                ...task,
+                status: expired ? 'failed' : 'running',
+                next_poll_at: '2026-11-06T10:00:00+08:00',
+                error_message: expired ? '远端视频任务已过期，未重新提交。' : '',
+              },
+              assets: [],
+              remote_jobs: [
+                {
+                  id: 'remote-job-1',
+                  round: 1,
+                  remote_id: remoteId,
+                  model: 'wan3.0-video',
+                  status: expired ? 'unknown' : 'running',
+                  error_message: '状态查询暂不可用，将继续查询，未重新提交。',
+                },
+              ],
+            },
+            message: 'ok',
+          },
+        })
+        return true
+      }
+      if (path === '/audit/costs') {
+        await route.fulfill({
+          json: {
+            code: 200,
+            data: {
+              total_runs: 0,
+              total_cost_usd: 0,
+              total_prompt_tokens: 0,
+              total_completion_tokens: 0,
+              total_tokens: 0,
+              unreported_video_jobs: 1,
+            },
+            message: 'ok',
+          },
+        })
+        return true
+      }
+      return false
+    }
+    await page.goto('/workbench/task-1')
+    const panel = page.getByRole('region', { name: '远端视频任务' })
+    await expect(panel).toContainText('服务恢复后会继续查询已有任务')
+    await expect(panel).toContainText('未计入当前费用合计')
+    await panel.getByText('核对厂商任务', { exact: true }).click()
+    await expect(panel).toContainText(remoteId)
+    await noOverflow(page)
+    expired = true
+    await page.getByRole('button', { name: '刷新任务' }).click()
+    await expect(page.getByText('远端视频任务已过期，未重新提交。', { exact: true })).toBeVisible()
+    await expect(panel).toContainText('已过期或不可查询')
+    await page.goto('/audit')
+    await expect(
+      page.getByText('1 个视频任务尚无可靠费用数据，费用合计未包含这些任务，请以厂商账单为准。'),
+    ).toBeVisible()
+    await noOverflow(page)
+    expect(h.writes).toHaveLength(0)
+  })
+}

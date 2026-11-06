@@ -13,6 +13,8 @@ async def dependency_status() -> dict[str, str]:
             await session.execute(text("SELECT 1 FROM alembic_version LIMIT 1"))
             await session.execute(text("SELECT execution_id FROM ac_task WHERE tenant_id = '__schema_check__' LIMIT 1"))
             await session.execute(text("SELECT request_key FROM ac_task_execution WHERE tenant_id = '__schema_check__' LIMIT 1"))
+            await session.execute(text("SELECT state_snapshot FROM ac_task_execution WHERE tenant_id = '__schema_check__' LIMIT 1"))
+            await session.execute(text("SELECT remote_id FROM ac_provider_job WHERE tenant_id = '__schema_check__' LIMIT 1"))
         return True
 
     async def redis() -> bool:

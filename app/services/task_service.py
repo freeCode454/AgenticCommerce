@@ -13,6 +13,7 @@ from app.models.base import generate_uuid32
 from app.models.batch import Batch
 from app.models.compliance import ComplianceReport
 from app.models.copy import Copy
+from app.models.provider_job import ProviderJob
 from app.models.sku import Sku
 from app.models.task import Task
 from app.models.task_execution import TaskExecution
@@ -109,6 +110,14 @@ class TaskService(BaseService):
         assets = (await self.session.execute(select(Asset).where(Asset.task_id == task_id, Asset.tenant_id == tenant_id, Asset.is_deleted == 0, Asset.execution_id == task.execution_id))).scalars().all()
         report_obj = (await self.session.execute(select(ComplianceReport).where(ComplianceReport.task_id == task_id, ComplianceReport.tenant_id == tenant_id, ComplianceReport.is_deleted == 0, ComplianceReport.execution_id == task.execution_id).order_by(ComplianceReport.create_time.desc(), ComplianceReport.id.desc()).limit(1))).scalar_one_or_none()
         sku_obj = (await self.session.execute(select(Sku).where(Sku.id == task.sku_id, Sku.tenant_id == tenant_id, Sku.is_deleted == 0))).scalar_one_or_none()
+        execution = (await self.session.execute(select(TaskExecution).where(
+            TaskExecution.id == task.execution_id, TaskExecution.tenant_id == tenant_id,
+            TaskExecution.task_id == task_id, TaskExecution.is_deleted == 0,
+        ))).scalar_one_or_none()
+        jobs = (await self.session.execute(select(ProviderJob).where(
+            ProviderJob.tenant_id == tenant_id, ProviderJob.task_id == task_id,
+            ProviderJob.execution_id == task.execution_id, ProviderJob.is_deleted == 0,
+        ).order_by(ProviderJob.round.desc()))).scalars().all()
 
         return {
             "task": {
@@ -117,6 +126,7 @@ class TaskService(BaseService):
                 "sku_code": sku_obj.code if sku_obj else "",
                 "status": task.status, "current_node": task.current_node,
                 "execution_id": task.execution_id, "error_message": task.error_message,
+                "next_poll_at": execution.next_poll_at.isoformat() if execution and execution.next_poll_at else None,
                 "retry_count": task.retry_count, "config": task.config,
                 "create_time": task.create_time.isoformat() if task.create_time else None,
             },
@@ -124,6 +134,12 @@ class TaskService(BaseService):
                 "title": copy_obj.title, "bullets": copy_obj.bullets,
                 "description": copy_obj.description, "keywords": copy_obj.keywords,
             } if copy_obj else None,
+            "remote_jobs": [{
+                "id": job.id, "remote_id": job.remote_id, "round": job.round + 1,
+                "status": job.status, "remote_status": job.remote_status, "model": job.model,
+                "error_message": job.error_message, "billing_status": "not_reported",
+                "expires_at": job.expires_at.isoformat(),
+            } for job in jobs],
             "assets": [
                 {"id": a.id, "type": a.type, "sub_type": a.sub_type, "url": a.url, "is_mock": a.is_mock, "meta": a.meta}
                 for a in assets

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Index, String, text
+from sqlalchemy import JSON, DateTime, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import AuditMixin, Base
@@ -31,3 +31,8 @@ class TaskExecution(Base, AuditMixin):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_message: Mapped[str | None] = mapped_column(String(1024))
+    state_snapshot: Mapped[dict | None] = mapped_column(JSON)
+    provider_snapshot_enc: Mapped[dict | None] = mapped_column(JSON)
+    next_node: Mapped[str | None] = mapped_column(String(64))
+    in_flight_node: Mapped[str | None] = mapped_column(String(64))
+    next_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)

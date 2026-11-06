@@ -6,14 +6,17 @@ VideoGenerator Agent (视频生成智能体)
 import logging
 import time
 
+from sqlalchemy import select
+
 from app.agent.recorder import record_node_execution
 from app.agent.state import AgentState
 from app.clients.postgres import AsyncSessionLocal
 from app.clients.provider_factory import ProviderFactory
 from app.core.generation import require_visual_plan
-from app.core.task_execution import fence_execution
+from app.core.task_execution import active_execution, fence_execution
 from app.models.asset import Asset
 from app.prompt.templates import load_prompt_template
+from app.services.remote_video import generate_durable_video
 
 logger = logging.getLogger("video_generator_node")
 
@@ -35,13 +38,13 @@ async def video_generator_node(state: AgentState) -> dict:
     video_prompt = prompts.video_storyboard
     ref_image_url = images[0].get("url") if images else None
 
-    video_client = ProviderFactory.get_video_client("kling")
-    vid_res = await video_client.generate_video(
-        prompt=video_prompt,
-        duration=5,
-        aspect_ratio="16:9",
-        image_url=ref_image_url,
-    )
+    if active_execution.get():
+        vid_res = await generate_durable_video(prompt=video_prompt, duration=5, aspect_ratio="16:9",
+            image_url=ref_image_url, round_number=state.get("retry_count", 0))
+    else:
+        video_client = ProviderFactory.get_video_client("kling")
+        vid_res = await video_client.generate_video(
+            prompt=video_prompt, duration=5, aspect_ratio="16:9", image_url=ref_image_url)
 
     video_url = vid_res.get("video_url", "")
     cost = vid_res.get("cost", 0.0)
@@ -54,7 +57,8 @@ async def video_generator_node(state: AgentState) -> dict:
         "duration": vid_res.get("duration", 5),
         "aspect_ratio": vid_res.get("aspect_ratio", "16:9"),
         "is_mock": is_mock,
-        "meta": {"model": vid_res.get("model", "kling-v1"), "fps": 30},
+        "meta": {"model": vid_res.get("model", "wan3.0-video"), "fps": 30,
+                 "billing_status": vid_res.get("billing_status"), "expires_at": vid_res.get("expires_at")},
     }
 
     # 持久化写入 ac_asset 表
@@ -62,7 +66,13 @@ async def video_generator_node(state: AgentState) -> dict:
         try:
             async with AsyncSessionLocal() as session:
                 execution_id = await fence_execution(session, tenant_id=tenant_id, task_id=task_id)
+                job_id = vid_res.get("provider_job_id")
+                previous = (await session.execute(select(Asset).where(
+                    Asset.provider_job_id == job_id, Asset.tenant_id == tenant_id,
+                    Asset.task_id == task_id, Asset.execution_id == execution_id, Asset.is_deleted == 0,
+                ))).scalar_one_or_none() if job_id else None
                 asset_obj = Asset(
+                    provider_job_id=job_id,
                     execution_id=execution_id,
                     tenant_id=tenant_id,
                     task_id=task_id,
@@ -74,7 +84,8 @@ async def video_generator_node(state: AgentState) -> dict:
                     status="completed",
                     is_mock=is_mock,
                 )
-                session.add(asset_obj)
+                if previous is None:
+                    session.add(asset_obj)
                 await session.commit()
         except Exception as e:
             logger.error("Video persistence failed: task_id=%s, error=%s", task_id, type(e).__name__)
@@ -92,6 +103,7 @@ async def video_generator_node(state: AgentState) -> dict:
         progress=85,
         input_data={"prompt": video_prompt, "ref_image": bool(ref_image_url)},
         output_data=video_info,
+        provider_job_id=vid_res.get("provider_job_id"),
     )
 
     return {

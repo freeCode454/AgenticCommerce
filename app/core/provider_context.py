@@ -13,6 +13,7 @@ class ProviderBinding:
     model: str
     api_key: str = field(repr=False)
     embedding_model: str = "text-embedding-v4"
+    api_base: str | None = None
 
 
 @dataclass(frozen=True)

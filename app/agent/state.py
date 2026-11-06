@@ -19,6 +19,7 @@ class AgentState(TypedDict, total=False):
     completed_steps: Annotated[List[str], operator.add]
     retry_count: int
     max_retries: int
+    resume_node: str
     
     # 业务产出物
     sku_data: Dict[str, Any]

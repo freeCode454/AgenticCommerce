@@ -1,9 +1,11 @@
-from sqlalchemy import String, Integer, Float, JSON
+from sqlalchemy import String, Integer, Float, JSON, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base, AuditMixin
 
 class TaskNodeRun(Base, AuditMixin):
     __tablename__ = "ac_task_node_run"
+    __table_args__ = (Index("uq_node_provider_job", "tenant_id", "provider_job_id", unique=True),)
+    provider_job_id: Mapped[str | None] = mapped_column(String(32))
     execution_id: Mapped[str | None] = mapped_column(String(32), index=True)
     task_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     node_name: Mapped[str] = mapped_column(String(64), nullable=False)

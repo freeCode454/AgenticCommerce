@@ -3,11 +3,14 @@
 """
 
 from typing import Optional
+
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, func
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.deps import get_db, get_current_user_and_tenant
+
+from app.core.deps import get_current_user_and_tenant, get_db
 from app.models.log import OperationLog
+from app.models.provider_job import ProviderJob
 from app.models.task_node_run import TaskNodeRun
 
 router = APIRouter(prefix="/audit", tags=["审计与成本大盘"])
@@ -72,6 +75,10 @@ async def get_cost_analytics(
     p_tokens = p_tokens or 0
     c_tokens = c_tokens or 0
     total_cost = round(float(total_cost or 0.0), 4)
+    unreported = (await db.execute(select(func.count()).select_from(ProviderJob).where(
+        ProviderJob.tenant_id == tenant_id, ProviderJob.is_deleted == 0,
+        or_(ProviderJob.remote_id.is_not(None), ProviderJob.status.in_(("submitting", "submission_unknown"))),
+    ))).scalar_one()
 
     return {
         "code": 200,
@@ -81,11 +88,8 @@ async def get_cost_analytics(
             "total_completion_tokens": c_tokens,
             "total_tokens": p_tokens + c_tokens,
             "total_cost_usd": total_cost,
-            "breakdown_by_model": [
-                {"model": "Qwen-Plus", "category": "LLM", "tokens": p_tokens + c_tokens, "cost": total_cost * 0.4},
-                {"model": "Wanx 2.1", "category": "Image", "runs": (run_count or 0) * 3, "cost": total_cost * 0.4},
-                {"model": "Kling AI", "category": "Video", "runs": run_count or 0, "cost": total_cost * 0.2},
-            ]
+            "unreported_video_jobs": unreported,
+            "breakdown_by_model": [],
         },
         "message": "获取成功"
     }

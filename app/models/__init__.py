@@ -10,6 +10,7 @@ from .sku import Sku
 from .batch import Batch
 from .task import Task
 from .task_execution import TaskExecution
+from .provider_job import ProviderJob
 from .task_node_run import TaskNodeRun
 from .copy import Copy
 from .asset import Asset
@@ -29,6 +30,7 @@ __all__ = [
     "Batch",
     "Task",
     "TaskExecution",
+    "ProviderJob",
     "TaskNodeRun",
     "Copy",
     "Asset",

@@ -7,29 +7,49 @@ interrupted, never automatically replayed: a provider may already have billed.
 import asyncio
 import logging
 from contextlib import suppress
+from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import case, select, text
+from sqlalchemy import and_, case, func, or_, select, text
 
 from app.clients.postgres import AsyncSessionLocal, engine
+from app.clients.wan_video import RemoteVideoPending, SubmissionUnknownError
 from app.conf.config import settings
 from app.core.task_execution import ExecutionContext, active_execution
 from app.models.base import utc_now
+from app.models.provider_job import ProviderJob
 from app.models.sku import Sku
 from app.models.task import Task
 from app.models.task_execution import TaskExecution
 from app.models.tenant import Tenant
 from app.services.provider_runtime import provider_scope
 from app.services.task_queue import advisory_key, refresh_batch
+from app.services.workflow_checkpoint import (
+    mark_unknown_submission,
+    recoverable_state,
+    save_provider_snapshot,
+)
 
 logger = logging.getLogger("task_worker")
 INTERRUPTED = "执行因服务停止或数据库连接中断而终止。模型请求可能已经产生费用；系统未自动重跑，请核对已有产物后手动重新生成。"
 
 
 async def execute_workflow(
-    task_id: str, tenant_id: str, sku_id: str, config: dict
+    task_id: str,
+    tenant_id: str,
+    sku_id: str,
+    config: dict,
+    resume_state: dict | None = None,
 ) -> dict[str, Any]:
     from app.agent.graph import app_workflow
+
+    if resume_state is not None:
+        if (
+            resume_state.get("task_id") != task_id
+            or resume_state.get("tenant_id") != tenant_id
+        ):
+            raise ValueError("Recovery state does not belong to this task")
+        return await app_workflow.ainvoke(resume_state)
 
     async with AsyncSessionLocal() as session:
         sku = (
@@ -55,7 +75,8 @@ async def execute_workflow(
                 "images",
             )
         }
-    async with provider_scope(tenant_id):
+    async with provider_scope(tenant_id) as snapshot:
+        await save_provider_snapshot(snapshot)
         return await app_workflow.ainvoke(
             {
                 "task_id": task_id,
@@ -94,9 +115,16 @@ class TaskWorker:
         # Fail startup clearly when the database has not been migrated.
         async with self.sessions() as session:
             await session.execute(
-                select(TaskExecution.id)
+                select(TaskExecution.state_snapshot, TaskExecution.next_poll_at)
                 .where(
                     TaskExecution.tenant_id == "__schema_check__",
+                )
+                .limit(1)
+            )
+            await session.execute(
+                select(ProviderJob.id)
+                .where(
+                    ProviderJob.tenant_id == "__schema_check__",
                 )
                 .limit(1)
             )
@@ -154,10 +182,22 @@ class TaskWorker:
                     (
                         await session.execute(
                             select(Task.id)
+                            .outerjoin(
+                                TaskExecution,
+                                and_(
+                                    TaskExecution.id == Task.execution_id,
+                                    TaskExecution.tenant_id == tenant_id,
+                                    TaskExecution.task_id == Task.id,
+                                ),
+                            )
                             .where(
                                 Task.tenant_id == tenant_id,
                                 Task.is_deleted == 0,
                                 Task.status.in_(("pending", "running", "retrying")),
+                                or_(
+                                    TaskExecution.next_poll_at.is_(None),
+                                    TaskExecution.next_poll_at <= func.now(),
+                                ),
                             )
                             .order_by(
                                 case((Task.status == "pending", 0), else_=1),
@@ -218,10 +258,33 @@ class TaskWorker:
                     )
                 )
             ).scalar_one_or_none()
-            if execution is None or execution.status != "pending":
+            if (
+                execution
+                and execution.next_poll_at
+                and execution.next_poll_at > utc_now()
+            ):
+                return None
+            has_started = execution is not None and bool(
+                execution.state_snapshot or execution.started_at
+            )
+            resume = (
+                await recoverable_state(session, task, execution)
+                if has_started
+                else None
+            )
+            if (
+                execution is None
+                or execution.status not in {"pending", "running"}
+                or (execution.status == "running" and resume is None)
+                or (has_started and resume is None)
+            ):
                 # We hold the session lock, so no healthy worker owns this task.
                 task.status, task.error_message = "failed", INTERRUPTED
-                if execution and execution.status == "running":
+                if execution:
+                    await mark_unknown_submission(
+                        session, tenant_id, task_id, execution.id
+                    )
+                if execution and execution.status in {"pending", "running"}:
                     execution.status, execution.error_message = (
                         "interrupted",
                         INTERRUPTED,
@@ -242,7 +305,9 @@ class TaskWorker:
                 await session.commit()
                 await self.broadcast(tenant_id, task_id)
                 return None
-            execution.status, execution.started_at = "running", utc_now()
+            execution.status = "running"
+            execution.started_at = execution.started_at or utc_now()
+            execution.next_poll_at = None
             task.status, task.current_node = "running", "orchestrator"
             await refresh_batch(session, tenant_id, task.batch_id)
             await session.commit()
@@ -252,6 +317,7 @@ class TaskWorker:
                 "sku_id": task.sku_id,
                 "config": task.config or {},
                 "execution_id": execution.id,
+                **({"resume_state": resume} if resume is not None else {}),
             }
 
     async def finish(
@@ -285,13 +351,59 @@ class TaskWorker:
             ).scalar_one_or_none()
             if task is None or execution is None:
                 return
-            execution.status, execution.finished_at, execution.error_message = (
-                status,
-                utc_now(),
-                message,
+            recover = (
+                await recoverable_state(session, task, execution)
+                if status in {"waiting", "interrupted"}
+                else None
             )
-            task.status = "completed" if status == "completed" else "failed"
-            task.error_message = message
+            if recover is not None:
+                job = (
+                    await session.execute(
+                        select(ProviderJob).where(
+                            ProviderJob.tenant_id == context.tenant_id,
+                            ProviderJob.task_id == context.task_id,
+                            ProviderJob.execution_id == context.execution_id,
+                            ProviderJob.round == recover.get("retry_count", 0),
+                            ProviderJob.is_deleted == 0,
+                        )
+                    )
+                ).scalar_one()
+                delay = (
+                    min(
+                        300,
+                        settings.VIDEO_POLL_SECONDS * 2 ** min(job.query_failures, 5),
+                    )
+                    if status == "waiting"
+                    else 0
+                )
+                execution.status, execution.finished_at, execution.error_message = (
+                    "pending",
+                    None,
+                    None,
+                )
+                execution.next_poll_at = utc_now() + timedelta(seconds=delay)
+                task.status, task.error_message = "running", None
+            else:
+                if status == "waiting":
+                    status, message = (
+                        "interrupted",
+                        "恢复记录不完整，未自动重新提交视频任务，请核对厂商记录。",
+                    )
+                execution.status, execution.finished_at, execution.error_message = (
+                    status,
+                    utc_now(),
+                    message,
+                )
+                task.status = "completed" if status == "completed" else "failed"
+                task.error_message = message
+                execution.next_poll_at = None
+                if status == "interrupted":
+                    await mark_unknown_submission(
+                        session,
+                        context.tenant_id,
+                        context.task_id,
+                        context.execution_id,
+                    )
             await refresh_batch(session, context.tenant_id, task.batch_id)
             await session.commit()
         await self.broadcast(context.tenant_id, context.task_id)
@@ -357,6 +469,14 @@ class TaskWorker:
                     else "审核未通过或生成结果不完整，请检查本次执行记录。",
                 )
                 return True
+            except RemoteVideoPending:
+                if context:
+                    await self.finish(context, "waiting")
+                return False
+            except SubmissionUnknownError as error:
+                if context:
+                    await self.finish(context, "interrupted", str(error))
+                return False
             except asyncio.CancelledError:
                 if invoke:
                     invoke.cancel()
