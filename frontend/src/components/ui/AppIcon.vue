@@ -18,6 +18,7 @@ const paths: Record<string, string> = {
   logout: 'M9 4H4v16h5m5-12 4 4-4 4M8 12h12',
   search: 'M10.5 3a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15Zm5.5 13 5 5',
   'chevron-right': 'm9 5 7 7-7 7',
+  'chevron-down': 'm5 9 7 7 7-7',
   'chevron-left': 'm15 5-7 7 7 7',
   'arrow-right': 'M4 12h16m-6-6 6 6-6 6',
   'arrow-left': 'M20 12H4m6-6-6 6 6 6',

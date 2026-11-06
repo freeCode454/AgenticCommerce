@@ -638,3 +638,58 @@ for (const width of [1440, 360]) {
     expect(h.writes).toHaveLength(0)
   })
 }
+
+for (const width of [1440, 360]) {
+  test(`账号菜单支持键盘、退出及真实信息，${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    const h = await setup(page)
+    h.handler = async (route, path) => {
+      if (path !== '/auth/me') return false
+      await route.fulfill({
+        json: {
+          code: 200,
+          data: {
+            user_id: 'qa-user',
+            name: '名称很长的工作空间管理员',
+            email: 'qa@example.test',
+            role: 'admin',
+            tenant_id: 'qa-tenant',
+            tenant_name: '用于检查长名称布局的企业工作空间'.repeat(5),
+          },
+          message: 'ok',
+        },
+      })
+      return true
+    }
+    await page.goto('/dashboard')
+    await ready(page)
+    const trigger = page.locator('.account-menu > summary')
+    await trigger.focus()
+    await page.keyboard.press('Enter')
+    const account = page.getByRole('group', { name: '当前账号信息' })
+    await expect(account).toBeVisible()
+    await expect(account).toContainText('qa@example.test')
+    await page.keyboard.press('Tab')
+    await expect(account.getByRole('link', { name: '工作空间设置' })).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(account).toBeHidden()
+    await expect(trigger).toBeFocused()
+    await trigger.click()
+    await page.mouse.click(8, 80) // Outside the popup even on a narrow screen.
+    await expect(account).toBeHidden()
+    await trigger.click()
+    await account.getByRole('link', { name: '工作空间设置' }).click()
+    await expect(page).toHaveURL(/\/settings$/)
+    await expect(account).toBeHidden()
+    await noOverflow(page)
+    if (width === 360) await page.getByRole('button', { name: '打开导航' }).click()
+    const profile = await page.locator('.sidebar-profile').boundingBox()
+    expect(profile).not.toBeNull()
+    expect(profile!.y + profile!.height).toBeLessThanOrEqual(901)
+    if (width === 360) await page.keyboard.press('Escape')
+    await trigger.click()
+    await account.getByRole('button', { name: '退出登录' }).click()
+    await expect(page).toHaveURL(/\/login$/)
+    expect(h.writes).toHaveLength(0)
+  })
+}

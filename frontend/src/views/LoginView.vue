@@ -50,7 +50,7 @@ async function login() {
 <template>
   <main class="login-page">
     <section class="login-story">
-      <BrandLogo light />
+      <BrandLogo />
       <div class="story-heading">
         <span class="story-kicker">
           <i />
