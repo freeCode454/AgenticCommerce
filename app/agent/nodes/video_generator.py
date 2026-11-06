@@ -3,15 +3,17 @@ VideoGenerator Agent (视频生成智能体)
 功能：调用快手可灵 Kling AI API，根据分镜脚本生成 5-10 秒产品动态带货短视频，并持久化保存至 ac_asset 表
 """
 
-import time
 import logging
-from app.agent.state import AgentState
+import time
+
 from app.agent.recorder import record_node_execution
+from app.agent.state import AgentState
 from app.clients.postgres import AsyncSessionLocal
 from app.clients.provider_factory import ProviderFactory
+from app.core.generation import require_visual_plan
+from app.core.task_execution import fence_execution
 from app.models.asset import Asset
 from app.prompt.templates import load_prompt_template
-from app.core.generation import require_visual_plan
 
 logger = logging.getLogger("video_generator_node")
 
@@ -59,7 +61,9 @@ async def video_generator_node(state: AgentState) -> dict:
     if task_id and sku_id and video_url:
         try:
             async with AsyncSessionLocal() as session:
+                execution_id = await fence_execution(session, tenant_id=tenant_id, task_id=task_id)
                 asset_obj = Asset(
+                    execution_id=execution_id,
                     tenant_id=tenant_id,
                     task_id=task_id,
                     sku_id=sku_id,

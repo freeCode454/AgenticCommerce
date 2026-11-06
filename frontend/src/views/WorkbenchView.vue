@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import client from '@/api/client'
 import { useTaskWorkspace } from '@/composables/useTaskWorkspace'
+import { createSubmissionKey } from '@/utils/submissionKey'
 import { useUiStore } from '@/stores/ui'
 import { dateText, errorMessage, fullCopy, moneyText, outputText } from '@/utils/format'
 import PageHeading from '@/components/ui/PageHeading.vue'
@@ -32,6 +33,7 @@ const tab = ref('copy'),
   drawer = ref(false),
   selected = ref(''),
   retrying = ref(false)
+const retryKey = createSubmissionKey()
 const steps = [
   { key: 'orchestrator', name: '任务准备' },
   { key: 'requirement_analyzer', name: '需求分析' },
@@ -80,7 +82,10 @@ async function retry() {
     return
   retrying.value = true
   try {
-    await client.post(`/tasks/${taskId.value}/run`)
+    await client.post(`/tasks/${taskId.value}/run`, undefined, {
+      headers: { 'Idempotency-Key': retryKey.forPayload(taskId.value) },
+    })
+    retryKey.reset()
     ui.notify('已重新创建执行请求')
     await refresh()
     reconnectNow()
@@ -154,7 +159,12 @@ function openNode(key: string) {
       </div>
       <div v-if="detail.task.status === 'failed'" class="notice notice-danger">
         <AppIcon name="warning" />
-        <span>任务执行失败。请查看失败节点的执行记录，检查模型配置或重试。</span>
+        <span>
+          {{
+            detail.task.error_message ||
+            '任务执行失败。请查看失败节点的执行记录，检查模型配置或重试。'
+          }}
+        </span>
       </div>
       <div v-if="detail.task.status === 'review_required'" class="notice notice-warning">
         <AppIcon name="info" />
@@ -162,7 +172,11 @@ function openNode(key: string) {
           文案修改后，旧审核已失效。当前只支持完整重新生成，可能覆盖手工编辑的文案并产生费用。
         </span>
       </div>
-      <div v-if="running" class="notice">
+      <div v-if="detail.task.status === 'pending'" class="notice">
+        <AppIcon name="clock" />
+        <span>任务已保存，正在排队。尚未开始的任务会在服务恢复后继续执行。</span>
+      </div>
+      <div v-else-if="running" class="notice">
         <AppIcon name="clock" />
         <span>
           创作仍在执行中，已记录 {{ completed }} / 7

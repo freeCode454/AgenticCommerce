@@ -11,7 +11,7 @@ from sqlalchemy.pool import NullPool
 from app.conf.config import settings
 from app.core.deps import get_db
 from app.core.security import create_access_token, get_password_hash
-from app.models import Tenant, User, Sku, Task, Copy, ComplianceReport
+from app.models import ComplianceReport, Copy, Sku, Task, Tenant, User
 from main import app
 
 
@@ -93,7 +93,9 @@ async def test_generated_copy_persists_validated_fields_with_tenant(context, mon
     import json
     from contextlib import asynccontextmanager
     from unittest.mock import AsyncMock
+
     from sqlalchemy import select
+
     from app.agent.nodes import creative_planner
     from app.core.generation import GenerationOutputError
 
@@ -152,8 +154,8 @@ async def test_editing_copy_invalidates_previous_approval(context):
 
 @pytest_asyncio.fixture
 async def provider_context(context, monkeypatch):
-    from app.models.provider import Provider
     from app.core.provider_keys import encrypt_api_key, new_encryption_key
+    from app.models.provider import Provider
     key = new_encryption_key()
     monkeypatch.setattr(settings, "PROVIDER_ENCRYPTION_KEY", key)
     rows=[]
@@ -183,8 +185,8 @@ async def test_provider_key_write_is_encrypted_and_api_never_returns_secrets(pro
 
 
 async def test_default_switch_does_not_modify_other_tenant_and_clear_never_falls_back(provider_context, monkeypatch):
-    from app.services.provider_runtime import provider_scope
     from app.clients.provider_factory import ProviderFactory
+    from app.services.provider_runtime import provider_scope
     ctx=provider_context
     response=await ctx["client"].put('/api/v1/providers/'+ctx["standby"].id,json={"is_default":1})
     assert response.status_code==200
@@ -266,6 +268,7 @@ async def test_invalid_requests_do_not_echo_credentials(provider_context):
 ])
 async def test_authenticated_model_operations_bind_tenant_provider(provider_context,monkeypatch,path,payload):
     import json
+
     from app.clients.provider_factory import QwenLLMClient
     ctx=provider_context
     observed=[]
@@ -297,11 +300,11 @@ async def test_background_workflow_has_independent_tenant_snapshot(provider_cont
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
+
     from app.agent import graph
-    from app.api.v1.tasks import run_agent_workflow_background
-    from app.clients import postgres
     from app.clients.provider_factory import ProviderFactory
-    from app.services import provider_runtime
+    from app.services import provider_runtime, task_worker
+    from app.services.task_worker import execute_workflow
     ctx=provider_context
     observed=[]
     @asynccontextmanager
@@ -309,16 +312,16 @@ async def test_background_workflow_has_independent_tenant_snapshot(provider_cont
     async def execute(state):
         observed.append((ProviderFactory.get_llm_client().api_key,state['tenant_id']))
         return {}
-    monkeypatch.setattr(postgres,'AsyncSessionLocal',session)
+    monkeypatch.setattr(task_worker,'AsyncSessionLocal',session)
     monkeypatch.setattr(provider_runtime,'AsyncSessionLocal',session)
     monkeypatch.setattr(graph,'app_workflow',SimpleNamespace(ainvoke=AsyncMock(side_effect=execute)))
-    await run_agent_workflow_background(ctx['task'],ctx['tenant_a'],ctx['sku_a'],{'media_type':'both'})
+    await execute_workflow(ctx['task'],ctx['tenant_a'],ctx['sku_a'],{'media_type':'both'})
     assert observed==[('offline-tenant-a-key',ctx['tenant_a'])]
 
 
 async def test_bad_image_key_does_not_block_llm_only_operation(provider_context,monkeypatch):
-    from app.models.provider import Provider
     from app.clients.provider_factory import QwenLLMClient
+    from app.models.provider import Provider
     ctx=provider_context
     ctx['session'].add(Provider(id=uuid.uuid4().hex,tenant_id=ctx['tenant_a'],type='image',name='Invalid image config',api_key_enc='enc:v1:unreadable',config={'model':'image-model','credential_source':'stored'},is_default=1))
     await ctx['session'].flush()
@@ -330,6 +333,7 @@ async def test_bad_image_key_does_not_block_llm_only_operation(provider_context,
 
 async def test_legacy_key_migration_is_scoped_idempotent_and_does_not_activate(provider_context,monkeypatch):
     from contextlib import asynccontextmanager
+
     from app.models.provider import Provider
     from app.scripts import encrypt_provider_keys
     ctx=provider_context
@@ -348,8 +352,8 @@ async def test_legacy_key_migration_is_scoped_idempotent_and_does_not_activate(p
 
 
 async def test_saving_model_without_replacing_key_preserves_ciphertext(provider_context):
-    from app.services.provider_runtime import provider_scope
     from app.clients.provider_factory import ProviderFactory
+    from app.services.provider_runtime import provider_scope
     ctx=provider_context
     ciphertext=ctx['default'].api_key_enc
     result=await ctx['client'].put('/api/v1/providers/'+ctx['default'].id,json={'config':{'model':'updated-model','credential_source':'stored','embedding_model':'updated-embedding'}})
@@ -362,8 +366,8 @@ async def test_saving_model_without_replacing_key_preserves_ciphertext(provider_
 
 
 async def test_embedding_model_change_does_not_mix_old_and_new_vectors(provider_context,monkeypatch):
-    from app.models.knowledge import KnowledgeBaseDoc,KnowledgeChunk
     from app.clients.provider_factory import QwenLLMClient
+    from app.models.knowledge import KnowledgeBaseDoc, KnowledgeChunk
     from app.repositories.knowledge_repo import KnowledgeRepository
     from app.services.knowledge_service import KnowledgeService
     ctx=provider_context

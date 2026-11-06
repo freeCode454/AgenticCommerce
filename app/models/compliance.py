@@ -4,6 +4,7 @@ from .base import Base, AuditMixin
 
 class ComplianceReport(Base, AuditMixin):
     __tablename__ = "ac_compliance_report"
+    execution_id: Mapped[str | None] = mapped_column(String(32), index=True)
     task_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     sku_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     score: Mapped[float] = mapped_column(Float, default=100.0)

@@ -9,6 +9,7 @@ from .knowledge import KnowledgeBaseDoc, KnowledgeChunk
 from .sku import Sku
 from .batch import Batch
 from .task import Task
+from .task_execution import TaskExecution
 from .task_node_run import TaskNodeRun
 from .copy import Copy
 from .asset import Asset
@@ -27,6 +28,7 @@ __all__ = [
     "Sku",
     "Batch",
     "Task",
+    "TaskExecution",
     "TaskNodeRun",
     "Copy",
     "Asset",

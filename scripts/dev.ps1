@@ -12,11 +12,17 @@ function Invoke-Checked([string]$Executable, [string[]]$Arguments) {
 
 function Stop-LocalProcesses {
     if (Test-Path -LiteralPath $recordPath) {
-        $records = Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json
+        $records = @(Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json)
+        [array]::Reverse($records)
         foreach ($record in $records) {
             $ownedProcess = Get-Process -Id $record.id -ErrorAction SilentlyContinue
             if ($ownedProcess -and $ownedProcess.StartTime.ToUniversalTime().Ticks -eq $record.startedUtcTicks -and $ownedProcess.Path -eq $record.path) {
-                Stop-Process -Id $record.id
+                try { Stop-Process -Id $record.id -ErrorAction Stop }
+                catch {
+                    # A child may exit together with its launcher between lookup and stop.
+                    $remaining = Get-Process -Id $record.id -ErrorAction SilentlyContinue
+                    if ($remaining -and $remaining.StartTime.ToUniversalTime().Ticks -eq $record.startedUtcTicks -and $remaining.Path -eq $record.path) { throw }
+                }
             }
         }
         Remove-Item -LiteralPath $recordPath
@@ -76,6 +82,18 @@ try {
     $ready = $false
     for ($attempt = 0; $attempt -lt 20; $attempt++) {
         if ($backendProcess.HasExited -or $frontendProcess.HasExited) { throw 'A local service exited. Check logs.' }
+        # A Windows venv launcher may spawn the actual Uvicorn process as a child.
+        # Record it while the verified parent is alive so Stop also closes the API.
+        $backendChildren = Get-CimInstance Win32_Process -Filter "ParentProcessId = $($backendProcess.Id)"
+        foreach ($child in $backendChildren) {
+            if ($child.CommandLine -match 'uvicorn\s+main:app' -and $child.ProcessId -notin $startedRecords.id) {
+                $childProcess = Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue
+                if ($childProcess) {
+                    $startedRecords += [pscustomobject]@{ id = $childProcess.Id; startedUtcTicks = $childProcess.StartTime.ToUniversalTime().Ticks; path = $childProcess.Path }
+                    $startedRecords | ConvertTo-Json -AsArray | Set-Content -LiteralPath $recordPath -Encoding utf8
+                }
+            }
+        }
         try {
             $response = Invoke-RestMethod -Uri "http://127.0.0.1:$($config.port)/ready" -TimeoutSec 3
             if ($response.status -eq 'ready') { $ready = $true; break }

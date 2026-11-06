@@ -152,10 +152,14 @@ test('服务端筛选分页、筛选回到第一页与过期响应取消', async
 test('商品不预填规格，创建任务限制配置、防重复提交并进入工作台', async ({ page }) => {
   const h = await setup(page)
   let posts = 0
+  let releaseSubmission!: () => void
+  const gate = new Promise<void>((resolve) => {
+    releaseSubmission = resolve
+  })
   h.handler = async (route, path) => {
     if (path !== '/tasks' || route.request().method() !== 'POST') return false
     posts++
-    await new Promise((resolve) => setTimeout(resolve, 1500))
+    await gate
     await route.fulfill({
       json: { code: 200, data: { task_id: task.id }, message: 'ok' },
     })
@@ -197,6 +201,7 @@ test('商品不预填规格，创建任务限制配置、防重复提交并进�
   await page.locator('#task-create-form').evaluate((form) => {
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
   })
+  releaseSubmission()
   await expect(page).toHaveURL(/\/workbench\/task-1$/)
   expect(posts).toBe(1)
   expect(h.writes.find((r) => r.path === '/tasks')?.body.config).toEqual({
@@ -298,7 +303,82 @@ test('工作台鉴权、断线轮询、有限重连和离开时清理', async ({
   const fresh = () => h.requests.filter((r) => r.path === '/tasks/task-2').length,
     n = fresh()
   await page.waitForTimeout(5100)
-  expect(fresh()).toBe(n)
+  expect(fresh()).toBeGreaterThan(n)
+})
+
+test('任务提交响应丢失后复用请求标识，修改表单后使用新标识', async ({ page }) => {
+  const h = await setup(page)
+  const keys: string[] = []
+  h.handler = async (route, path) => {
+    if (path !== '/tasks' || route.request().method() !== 'POST') return false
+    keys.push(route.request().headers()['idempotency-key'])
+    if (keys.length < 3) await route.abort('failed')
+    else
+      await route.fulfill({
+        json: { code: 200, data: { task_id: 'task-1', status: 'pending' }, message: 'ok' },
+      })
+    return true
+  }
+  await page.goto('/tasks?new=1')
+  const dialog = page.getByRole('dialog', { name: '开始一次新创作' })
+  await dialog.getByRole('radio').first().check()
+  const submit = dialog.locator('button[form=task-create-form][type=submit]')
+  await submit.click()
+  await expect(dialog.getByRole('alert')).toBeVisible()
+  await submit.click()
+  await expect.poll(() => keys.length).toBe(2)
+  await expect(submit).toBeEnabled()
+  await dialog.getByLabel('审核未通过时的重试上限').selectOption('0')
+  await submit.click()
+  await expect(page).toHaveURL(/\/workbench\/task-1$/)
+  expect(keys[0]).toBeTruthy()
+  expect(keys[0]).toBe(keys[1])
+  expect(keys[2]).not.toBe(keys[1])
+})
+
+test('排队任务说明恢复行为，中断任务显示原因并在确认后重新排队', async ({ page }) => {
+  const h = await setup(page, { status: 'pending' })
+  let error = ''
+  h.handler = async (route, path) => {
+    if (path === '/tasks/task-1' && route.request().method() === 'GET') {
+      await route.fulfill({
+        json: {
+          code: 200,
+          data: { task: { ...task, status: h.status, error_message: error }, assets: [] },
+          message: 'ok',
+        },
+      })
+      return true
+    }
+    if (path === '/tasks/task-1/run') {
+      expect(route.request().headers()['idempotency-key']).toBeTruthy()
+      h.status = 'pending'
+      error = ''
+      await route.fulfill({
+        json: { code: 200, data: { task_id: 'task-1', status: 'pending' }, message: 'ok' },
+      })
+      return true
+    }
+    return false
+  }
+  await page.goto('/workbench/task-1')
+  await expect(
+    page.getByText('任务已保存，正在排队。尚未开始的任务会在服务恢复后继续执行。'),
+  ).toBeVisible()
+  await expect(page.getByRole('button', { name: '重新生成', exact: true })).toHaveCount(0)
+  h.status = 'failed'
+  error = '执行因数据库连接中断而终止。模型请求可能已经产生费用；系统未自动重跑。'
+  await page.getByRole('button', { name: '刷新任务' }).click()
+  await expect(page.getByText(error)).toBeVisible()
+  await page.getByRole('button', { name: '重新生成', exact: true }).click()
+  const confirm = page.getByRole('dialog', { name: '重新执行这个任务' })
+  await expect(confirm).toContainText('再次产生模型费用')
+  expect(h.writes).toHaveLength(0)
+  await confirm.getByRole('button', { name: '重新生成', exact: true }).click()
+  await expect(
+    page.getByText('任务已保存，正在排队。尚未开始的任务会在服务恢复后继续执行。'),
+  ).toBeVisible()
+  expect(h.writes.map((request) => request.path)).toEqual(['/tasks/task-1/run'])
 })
 
 for (const mode of ['full', 'empty', 'error'] as const)

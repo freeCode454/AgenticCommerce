@@ -15,6 +15,7 @@ from typing import Dict, Any, List, Optional
 import httpx
 from app.conf.config import settings
 from app.core.provider_context import active_providers
+from app.core.task_execution import guard_model_request
 
 logger = logging.getLogger("provider_factory")
 
@@ -50,6 +51,7 @@ class QwenLLMClient:
         response_format: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """发起千问大语言模型调用；若无 API Key 则自动进入高保真 Mock 模式"""
+        await guard_model_request()
         start_time = time.time()
         model = self.model or model
 
@@ -100,6 +102,7 @@ class QwenLLMClient:
 
     async def get_embedding(self, text: str, model: str = "text-embedding-v4") -> List[float]:
         """获取文本 Embedding 向量 (使用 DashScope HTTP API)"""
+        await guard_model_request()
         model = self.embedding_model or model
         if not self.api_key or self.api_key.strip() == "":
             # 伪归一化向量 (1024 维)
@@ -219,6 +222,7 @@ class WanxImageClient:
         model: str = "qwen-image-3.0-pro",
     ) -> Dict[str, Any]:
         """同步返回结果文生图任务；无 Key 时自动切换高清商品级 Mock"""
+        await guard_model_request()
         start_time = time.time()
         model = self.model or model
 
@@ -326,6 +330,7 @@ class KlingVideoClient:
         image_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """创建文生视频任务；无 Key 时自动切换商品演示 Mock"""
+        await guard_model_request()
         start_time = time.time()
         model = self.model or model
 

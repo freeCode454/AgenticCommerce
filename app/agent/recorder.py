@@ -9,6 +9,7 @@ from app.models.task_node_run import TaskNodeRun
 from app.models.task import Task
 from app.api.v1.ws import ws_manager
 from sqlalchemy import update
+from app.core.task_execution import fence_execution
 
 logger = logging.getLogger("agent_recorder")
 
@@ -40,7 +41,9 @@ async def record_node_execution(
     if task_id:
         try:
             async with AsyncSessionLocal() as session:
+                execution_id = await fence_execution(session, tenant_id=tenant_id, task_id=task_id)
                 node_run = TaskNodeRun(
+                    execution_id=execution_id,
                     tenant_id=tenant_id or "tenant_default",
                     task_id=task_id,
                     node_name=node_name,

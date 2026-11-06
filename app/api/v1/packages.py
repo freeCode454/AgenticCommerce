@@ -73,13 +73,13 @@ async def export_package(
     if task.status != "completed":
         raise HTTPException(status_code=409, detail="任务尚未完成或需要重新审核")
 
-    copy_res = await db.execute(select(Copy).where(Copy.task_id == req.task_id, Copy.tenant_id == tenant_id, Copy.is_deleted == 0).order_by(Copy.create_time.desc(), Copy.id.desc()).limit(1))
+    copy_res = await db.execute(select(Copy).where(Copy.task_id == req.task_id, Copy.tenant_id == tenant_id, Copy.is_deleted == 0, Copy.execution_id == task.execution_id).order_by(Copy.create_time.desc(), Copy.id.desc()).limit(1))
     copy_obj = copy_res.scalar_one_or_none()
 
-    assets_res = await db.execute(select(Asset).where(Asset.task_id == req.task_id, Asset.tenant_id == tenant_id, Asset.is_deleted == 0))
+    assets_res = await db.execute(select(Asset).where(Asset.task_id == req.task_id, Asset.tenant_id == tenant_id, Asset.is_deleted == 0, Asset.execution_id == task.execution_id))
     assets = assets_res.scalars().all()
 
-    report_res = await db.execute(select(ComplianceReport).where(ComplianceReport.task_id == req.task_id, ComplianceReport.tenant_id == tenant_id, ComplianceReport.is_deleted == 0).order_by(ComplianceReport.create_time.desc(), ComplianceReport.id.desc()).limit(1))
+    report_res = await db.execute(select(ComplianceReport).where(ComplianceReport.task_id == req.task_id, ComplianceReport.tenant_id == tenant_id, ComplianceReport.is_deleted == 0, ComplianceReport.execution_id == task.execution_id).order_by(ComplianceReport.create_time.desc(), ComplianceReport.id.desc()).limit(1))
     report_obj = report_res.scalar_one_or_none()
     if report_obj is None or report_obj.passed != 1 or report_obj.status != "passed":
         raise HTTPException(status_code=409, detail="交付前必须通过最新审核")

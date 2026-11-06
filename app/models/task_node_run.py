@@ -4,6 +4,7 @@ from .base import Base, AuditMixin
 
 class TaskNodeRun(Base, AuditMixin):
     __tablename__ = "ac_task_node_run"
+    execution_id: Mapped[str | None] = mapped_column(String(32), index=True)
     task_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     node_name: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="running")

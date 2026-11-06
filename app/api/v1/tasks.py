@@ -4,15 +4,15 @@
 """
 
 import logging
-from typing import Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
-from app.api.task_config import TaskConfig
-from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.deps import get_db, get_current_user_and_tenant
-from app.models.sku import Sku
-from app.models.task import Task
+
+from app.api.task_config import TaskConfig
+from app.core.deps import get_current_user_and_tenant, get_db
+from app.services.task_queue import TaskConflictError
 from app.services.task_service import TaskService
 
 logger = logging.getLogger("tasks_api")
@@ -22,44 +22,6 @@ class TaskCreateRequest(BaseModel):
     sku_id: str
     batch_id: Optional[str] = None
     config: TaskConfig = Field(default_factory=TaskConfig)
-
-
-async def run_agent_workflow_background(task_id: str, tenant_id: str, sku_id: str, config: dict):
-    """后台异步触发 7-Agent 工作流（保留在路由层, 因为依赖 BackgroundTasks 生命周期）"""
-    try:
-        from app.agent.graph import app_workflow
-        from app.clients.postgres import AsyncSessionLocal
-        async with AsyncSessionLocal() as session:
-            sku_res = await session.execute(select(Sku).where(Sku.id == sku_id, Sku.tenant_id == tenant_id, Sku.is_deleted == 0))
-            sku = sku_res.scalar_one_or_none()
-            if not sku:
-                raise ValueError("SKU not found for tenant")
-            sku_data = {
-                "id": sku.id, "code": sku.code, "name": sku.name,
-                "category": sku.category, "specs": sku.specs,
-                "description": sku.description, "images": sku.images,
-            }
-
-        initial_state = {
-            "task_id": task_id, "tenant_id": tenant_id, "sku_id": sku_id,
-            "sku_data": sku_data, "config": config,
-            "retry_count": 0, "max_retries": config.get("max_retries", 2),
-            "completed_steps": [],
-        }
-
-        logger.info(f"后台异步启动任务: {task_id}")
-        from app.services.provider_runtime import provider_scope
-        async with provider_scope(tenant_id):
-            await app_workflow.ainvoke(initial_state)
-        logger.info(f"后台任务 {task_id} 顺利执行完成")
-    except Exception as e:
-        logger.error("Workflow failed: task_id=%s, error=%s", task_id, type(e).__name__)
-        from app.clients.postgres import AsyncSessionLocal
-        async with AsyncSessionLocal() as session:
-            await session.execute(update(Task).where(
-                Task.id == task_id, Task.tenant_id == tenant_id, Task.is_deleted == 0,
-            ).values(status="failed", error_message=f"工作流执行失败 ({type(e).__name__})"))
-            await session.commit()
 
 
 @router.get("")
@@ -80,7 +42,7 @@ async def list_tasks(
 @router.post("")
 async def create_task(
     req: TaskCreateRequest,
-    background_tasks: BackgroundTasks,
+    request_key: str | None = Header(None, alias="Idempotency-Key", max_length=128),
     db: AsyncSession = Depends(get_db),
     user_tenant: dict = Depends(get_current_user_and_tenant),
 ):
@@ -89,18 +51,14 @@ async def create_task(
     try:
         result = await svc.create_task(
             tenant_id=user_tenant["tenant_id"], user_id=user_tenant.get("user_id"),
-            sku_id=req.sku_id, batch_id=req.batch_id, config=req.config.model_dump(),
+            sku_id=req.sku_id, batch_id=req.batch_id, config=req.config.model_dump(), request_key=request_key,
         )
+    except TaskConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    # 提交至后台执行
-    background_tasks.add_task(
-        run_agent_workflow_background,
-        task_id=result["task_id"], tenant_id=user_tenant["tenant_id"],
-        sku_id=req.sku_id, config=req.config.model_dump(),
-    )
-    return {"code": 200, "data": {"task_id": result["task_id"], "status": "running", "message": "工作流已成功调度执行"}, "message": "任务创建成功"}
+    return {"code": 200, "data": {"task_id": result["task_id"], "status": result["status"], "message": "任务已持久化保存"}, "message": "任务已加入执行队列"}
 
 
 @router.get("/{task_id}")
@@ -113,6 +71,8 @@ async def get_task_detail(
     svc = TaskService(db)
     try:
         result = await svc.get_task_detail(user_tenant["tenant_id"], task_id)
+    except TaskConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"code": 200, "data": result, "message": "获取成功"}
@@ -133,20 +93,17 @@ async def get_task_node_runs(
 @router.post("/{task_id}/run")
 async def trigger_task_run(
     task_id: str,
-    background_tasks: BackgroundTasks,
+    request_key: str | None = Header(None, alias="Idempotency-Key", max_length=128),
     db: AsyncSession = Depends(get_db),
     user_tenant: dict = Depends(get_current_user_and_tenant),
 ):
     """手动重新触发任务执行"""
     svc = TaskService(db)
     try:
-        result = await svc.retrigger_task(user_tenant["tenant_id"], task_id)
+        result = await svc.retrigger_task(user_tenant["tenant_id"], task_id, request_key=request_key)
+    except TaskConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    background_tasks.add_task(
-        run_agent_workflow_background,
-        task_id=result["task_id"], tenant_id=user_tenant["tenant_id"],
-        sku_id=result["sku_id"], config=result["config"],
-    )
-    return {"code": 200, "data": {"task_id": result["task_id"], "status": "running"}, "message": "重新调度成功"}
+    return {"code": 200, "data": {"task_id": result["task_id"], "status": result["status"]}, "message": "已加入执行队列"}

@@ -34,6 +34,8 @@ export interface GenerationConfig {
   max_retries: number
 }
 export interface Task {
+  execution_id?: string
+  error_message?: string
   id: string
   sku_id: string
   sku_name?: string
@@ -87,6 +89,7 @@ export interface Report {
   create_time?: string
 }
 export interface NodeRun {
+  execution_id?: string
   id?: string
   node_name: string
   status: string

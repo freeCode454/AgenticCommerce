@@ -11,6 +11,8 @@ async def dependency_status() -> dict[str, str]:
     async def postgres() -> bool:
         async with AsyncSessionLocal() as session:
             await session.execute(text("SELECT 1 FROM alembic_version LIMIT 1"))
+            await session.execute(text("SELECT execution_id FROM ac_task WHERE tenant_id = '__schema_check__' LIMIT 1"))
+            await session.execute(text("SELECT request_key FROM ac_task_execution WHERE tenant_id = '__schema_check__' LIMIT 1"))
         return True
 
     async def redis() -> bool:

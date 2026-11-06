@@ -17,6 +17,7 @@ from app.core.generation import (
     parse_generation,
     product_context,
 )
+from app.core.task_execution import fence_execution
 from app.models.copy import Copy
 from app.prompt.templates import load_prompt_template
 
@@ -79,8 +80,10 @@ async def creative_planner_node(state: AgentState) -> dict[str, Any]:
         fields = draft.model_dump()
         if task_id and sku_id:
             async with AsyncSessionLocal() as session:
+                execution_id = await fence_execution(session, tenant_id=tenant_id, task_id=task_id)
                 session.add(
                     Copy(
+                        execution_id=execution_id,
                         tenant_id=tenant_id,
                         task_id=task_id,
                         sku_id=sku_id,

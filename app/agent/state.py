@@ -31,6 +31,7 @@ class AgentState(TypedDict, total=False):
     
     # 审核与路由
     quality_reports: List[Dict[str, Any]]
+    should_retry: bool
     is_passed: bool
     violations: List[Dict[str, Any]]
     error: Optional[str]

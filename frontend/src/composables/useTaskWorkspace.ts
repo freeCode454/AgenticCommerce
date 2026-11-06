@@ -168,7 +168,8 @@ export function useTaskWorkspace(taskId: Ref<string>) {
     { immediate: true },
   )
   const poll = setInterval(() => {
-    if (running.value && connection.value !== '实时连接正常' && !refreshing.value) void refresh()
+    // Poll running jobs even with a healthy socket: another API worker may own the job.
+    if (running.value && !refreshing.value) void refresh()
   }, 5000)
   onUnmounted(() => {
     disposed = true

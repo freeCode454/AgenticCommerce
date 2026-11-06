@@ -4,6 +4,7 @@ from .base import Base, AuditMixin
 
 class Copy(Base, AuditMixin):
     __tablename__ = "ac_copy"
+    execution_id: Mapped[str | None] = mapped_column(String(32), index=True)
     task_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     sku_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     language: Mapped[str] = mapped_column(String(16), default="en")

@@ -4,16 +4,20 @@ LangGraph 7-Agent 工作流图构建与编译
 """
 
 import logging
-from typing import Dict, Any, Literal
-from langgraph.graph import StateGraph, START, END
-from app.agent.state import AgentState
-from app.agent.nodes.orchestrator import orchestrator_node
-from app.agent.nodes.requirement_analyzer import requirement_analyzer_node
+from typing import Literal
+
+from langgraph.graph import END, START, StateGraph
+
 from app.agent.nodes.creative_planner import creative_planner_node
-from app.agent.nodes.visual_designer import visual_designer_node
 from app.agent.nodes.image_generator import image_generator_node
-from app.agent.nodes.video_generator import video_generator_node
+from app.agent.nodes.orchestrator import orchestrator_node
 from app.agent.nodes.quality_reviewer import quality_reviewer_node
+from app.agent.nodes.requirement_analyzer import requirement_analyzer_node
+from app.agent.nodes.video_generator import video_generator_node
+from app.agent.nodes.visual_designer import visual_designer_node
+from app.agent.recorder import record_node_execution
+from app.agent.state import AgentState
+from app.core.task_execution import active_execution
 
 logger = logging.getLogger("agent_graph")
 
@@ -32,25 +36,45 @@ def quality_review_router(state: AgentState) -> Literal["creative_planner", "__e
         logger.info("质量审核通过，工作流顺利收敛至 END。")
         return END
 
-    if retry_count < max_retries:
+    if state.get("should_retry", retry_count < max_retries):
         logger.warning(f"质量审核未通过，触发 P-E-V 回退循环！第 {retry_count} 次重试回退至 creative_planner...")
         return "creative_planner"
 
     logger.error(f"质量审核未通过且重试次数达到上限 ({max_retries})，流向 END 等待人工介入。")
     return END
 
+def observed_node(name, function):
+    async def execute(state: AgentState):
+        if active_execution.get() is None:
+            return await function(state)
+        await record_node_execution(
+            task_id=state["task_id"], tenant_id=state["tenant_id"], node_name=name, status="running",
+        )
+        try:
+            return await function(state)
+        except Exception as error:
+            from app.core.generation import GenerationOutputError
+            await record_node_execution(
+                task_id=state["task_id"], tenant_id=state["tenant_id"], node_name=name,
+                status="failed", output_data={"error_message": str(error) if isinstance(error, GenerationOutputError)
+                                               else f"节点执行失败 ({type(error).__name__})，请检查配置后重试。"},
+            )
+            raise
+    return execute
+
+
 def build_workflow():
     """构建 7-Agent 有状态 DAG 工作流"""
     builder = StateGraph(AgentState)
 
     # 1. 注册 7 大核心智能体节点
-    builder.add_node("orchestrator", orchestrator_node)
-    builder.add_node("requirement_analyzer", requirement_analyzer_node)
-    builder.add_node("creative_planner", creative_planner_node)
-    builder.add_node("visual_designer", visual_designer_node)
-    builder.add_node("image_generator", image_generator_node)
-    builder.add_node("video_generator", video_generator_node)
-    builder.add_node("quality_reviewer", quality_reviewer_node)
+    for name, node in (
+        ("orchestrator", orchestrator_node), ("requirement_analyzer", requirement_analyzer_node),
+        ("creative_planner", creative_planner_node), ("visual_designer", visual_designer_node),
+        ("image_generator", image_generator_node), ("video_generator", video_generator_node),
+        ("quality_reviewer", quality_reviewer_node),
+    ):
+        builder.add_node(name, observed_node(name, node))
 
     # 2. 编排线性拓扑流水线
     builder.add_edge(START, "orchestrator")

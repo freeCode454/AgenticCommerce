@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_db, get_current_user_and_tenant
 from app.services.copy_service import CopyService
+from app.services.task_queue import TaskConflictError
 
 router = APIRouter(prefix="/copies", tags=["文案管理"])
 
@@ -61,6 +62,8 @@ async def update_copy(
     svc = CopyService(db)
     try:
         result_id = await svc.update_copy(user_tenant["tenant_id"], copy_id, req.model_dump())
+    except TaskConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"code": 200, "data": {"id": result_id}, "message": "文案保存成功"}

@@ -3,19 +3,21 @@ QualityReviewer Agent (质量审核智能体)
 功能：针对文案合规性（违禁词/侵权词）、品牌调性契合度与视音频多媒体素材质量进行综合量化打分，生成合规报告并决定是否触发条件回退重试
 """
 
-import time
 import json
 import logging
-from app.agent.state import AgentState
+import time
+
+from sqlalchemy import update
+
 from app.agent.recorder import record_node_execution
+from app.agent.state import AgentState
 from app.clients.postgres import AsyncSessionLocal
-from app.clients.provider_factory import ProviderFactory
+from app.clients.provider_factory import ProviderCallError, ProviderFactory
+from app.core.compliance import parse_review, rule_violations
+from app.core.task_execution import active_execution, fence_execution
 from app.models.compliance import ComplianceReport
 from app.models.task import Task
 from app.prompt.templates import load_prompt_template
-from sqlalchemy import update
-from app.core.compliance import parse_review, rule_violations
-from app.clients.provider_factory import ProviderCallError
 
 logger = logging.getLogger("quality_reviewer_node")
 
@@ -96,13 +98,16 @@ async def quality_reviewer_node(state: AgentState) -> dict:
     if media_type in {"video", "both"} and (not video or not video.get("url") or video.get("is_mock")):
         violations.append("缺少真实视频产物")
     is_passed = passed == 1 and score >= 85.0 and not violations
-    next_retry_count = retry_count + (0 if is_passed else 1)
+    should_retry = not is_passed and retry_count < state.get("max_retries", 2)
+    next_retry_count = retry_count + (1 if should_retry else 0)
 
     # 持久化写入 ac_compliance_report 表
     if task_id and sku_id:
         try:
             async with AsyncSessionLocal() as session:
+                execution_id = await fence_execution(session, tenant_id=tenant_id, task_id=task_id)
                 report_obj = ComplianceReport(
+                    execution_id=execution_id,
                     tenant_id=tenant_id,
                     task_id=task_id,
                     sku_id=sku_id,
@@ -116,7 +121,9 @@ async def quality_reviewer_node(state: AgentState) -> dict:
                 session.add(report_obj)
 
                 # 更新任务主表状态
-                new_status = "completed" if is_passed else ("retrying" if next_retry_count < state.get("max_retries", 2) else "failed")
+                new_status = "completed" if is_passed else ("retrying" if should_retry else "failed")
+                if active_execution.get() and not should_retry:
+                    new_status = "running"  # Worker finalizes only after node persistence.
                 await session.execute(
                     update(Task)
                     .where(Task.id == task_id, Task.tenant_id == tenant_id, Task.is_deleted == 0)
@@ -159,6 +166,7 @@ async def quality_reviewer_node(state: AgentState) -> dict:
         "completed_steps": ["quality_reviewer"],
         "quality_reports": reports,
         "is_passed": is_passed,
+        "should_retry": should_retry,
         "violations": violations,
         "retry_count": next_retry_count,
     }

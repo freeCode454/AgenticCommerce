@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     RAG_TOP_K: int = 5
     RAG_SIMILARITY_THRESHOLD: float = 0.5
     MAX_QUALITY_RETRIES: int = 2
+    TASK_WORKER_ENABLED: bool = True
+    TASK_WORKER_CONCURRENCY: int = Field(2, ge=1, le=8)
+    TASK_WORKER_POLL_SECONDS: float = Field(1.0, ge=0.1, le=30)
+    TASK_WORKER_HEARTBEAT_SECONDS: float = Field(2.0, ge=0.1, le=15)
     BOOTSTRAP_ADMIN_EMAIL: str = "admin@agentic.com"
     BOOTSTRAP_ADMIN_PASSWORD: str = Field("", repr=False)
 

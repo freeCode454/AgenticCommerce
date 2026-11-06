@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
+import { createSubmissionKey } from '@/utils/submissionKey'
 import client from '@/api/client'
 import { useUiStore } from '@/stores/ui'
 import { errorMessage } from '@/utils/format'
@@ -17,6 +18,13 @@ const selected = ref<Sku[]>(props.sku ? [props.sku] : []),
   busy = ref(false),
   error = ref('')
 const ui = useUiStore()
+const submissionKey = createSubmissionKey()
+watch(
+  () => props.modelValue,
+  (open) => {
+    if (open) submissionKey.reset()
+  },
+)
 async function submit() {
   if (busy.value) return
   if (!selected.value.length) {
@@ -26,7 +34,7 @@ async function submit() {
   busy.value = true
   error.value = ''
   try {
-    const response = await client.post<ApiResponse<{ task_id: string }>>('/tasks', {
+    const payload = {
       sku_id: selected.value[0].id,
       config: {
         language: 'en',
@@ -34,7 +42,11 @@ async function submit() {
         media_type: 'both',
         max_retries: retries.value,
       },
+    }
+    const response = await client.post<ApiResponse<{ task_id: string }>>('/tasks', payload, {
+      headers: { 'Idempotency-Key': submissionKey.forPayload(payload) },
     })
+    submissionKey.reset()
     ui.notify('任务已创建，正在进入生成工作台')
     emit('update:modelValue', false)
     emit('created', response.data.data.task_id)

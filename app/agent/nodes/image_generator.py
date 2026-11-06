@@ -3,15 +3,17 @@ ImageGenerator Agent (图片生成智能体)
 功能：调用通义万相 Wanx 2.1 异步生图 API 生成多视角高精商业素材（白底主图、生活场景图、微距特写图），并保存至 ac_asset 表
 """
 
-import time
 import logging
-from app.agent.state import AgentState
+import time
+
 from app.agent.recorder import record_node_execution
+from app.agent.state import AgentState
 from app.clients.postgres import AsyncSessionLocal
 from app.clients.provider_factory import ProviderFactory
+from app.core.generation import require_visual_plan
+from app.core.task_execution import fence_execution
 from app.models.asset import Asset
 from app.prompt.templates import load_prompt_template
-from app.core.generation import require_visual_plan
 
 logger = logging.getLogger("image_generator_node")
 
@@ -65,7 +67,9 @@ async def image_generator_node(state: AgentState) -> dict:
             if task_id and sku_id:
                 try:
                     async with AsyncSessionLocal() as session:
+                        execution_id = await fence_execution(session, tenant_id=tenant_id, task_id=task_id)
                         asset_obj = Asset(
+                            execution_id=execution_id,
                             tenant_id=tenant_id,
                             task_id=task_id,
                             sku_id=sku_id,

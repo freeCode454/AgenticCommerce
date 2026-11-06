@@ -4,13 +4,16 @@
 """
 
 import logging
-from typing import List, Dict, Any
+from typing import Any, Dict, List
+
 from sqlalchemy import select
-from app.services.base import BaseService
-from app.models.batch import Batch
-from app.models.task import Task
-from app.models.sku import Sku
+
 from app.models.base import generate_uuid32
+from app.models.batch import Batch
+from app.models.sku import Sku
+from app.models.task import Task
+from app.services.base import BaseService
+from app.services.task_queue import deduplicate, enqueue
 
 logger = logging.getLogger("batch_service")
 
@@ -34,22 +37,34 @@ class BatchService(BaseService):
     async def create_batch(
         self, tenant_id: str, user_id: str,
         name: str, sku_ids: List[str], config: Dict[str, Any] = None,
+        request_key: str | None = None,
     ) -> dict:
         """创建批次 + 批量创建 Task 记录，返回各 task 信息供路由层调度工作流"""
         if not sku_ids:
             raise ValueError("sku_ids 不能为空")
 
         sku_ids = list(dict.fromkeys(sku_ids))
+        if len(sku_ids) > 100:
+            raise ValueError("每个批次最多包含 100 个商品")
+        existing, fingerprint = await deduplicate(self.session, Batch, tenant_id, request_key, {
+            "name": name, "sku_ids": sku_ids, "config": config or {},
+        })
+        if existing:
+            tasks = (await self.session.execute(select(Task).where(
+                Task.tenant_id == tenant_id, Task.batch_id == existing.id, Task.is_deleted == 0,
+            ))).scalars().all()
+            return {"batch_id": existing.id, "tasks": [{"task_id": t.id} for t in tasks]}
         owned = (await self.session.execute(select(Sku.id).where(
             Sku.id.in_(sku_ids), Sku.tenant_id == tenant_id, Sku.is_deleted == 0,
         ))).scalars().all()
         if set(owned) != set(sku_ids):
             raise ValueError("部分商品 SKU 不存在或不可访问")
 
-        batch_id = f"batch_{generate_uuid32()[:12]}"
+        batch_id = generate_uuid32()
         batch = Batch(
             id=batch_id, tenant_id=tenant_id, name=name,
-            status="running", total_count=len(sku_ids),
+            status="pending", total_count=len(sku_ids),
+            request_key=request_key, request_hash=fingerprint,
             completed_count=0, failed_count=0,
             config=config or {}, created_by=user_id,
         )
@@ -57,13 +72,14 @@ class BatchService(BaseService):
 
         task_infos = []
         for sku_id in sku_ids:
-            task_id = f"task_{generate_uuid32()[:12]}"
+            task_id = generate_uuid32()
             task = Task(
                 id=task_id, tenant_id=tenant_id, sku_id=sku_id,
-                batch_id=batch_id, status="running", current_node="orchestrator",
+                batch_id=batch_id,
                 retry_count=0, config=config or {}, created_by=user_id,
             )
             self.session.add(task)
+            enqueue(self.session, task, user_id)
             task_infos.append({"task_id": task_id, "sku_id": sku_id, "config": config or {}})
 
         await self.session.commit()

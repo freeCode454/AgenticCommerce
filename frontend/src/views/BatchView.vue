@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import client from '@/api/client'
+import { createSubmissionKey } from '@/utils/submissionKey'
 import { useCollection } from '@/composables/useCollection'
 import { useUiStore } from '@/stores/ui'
 import { dateText, errorMessage } from '@/utils/format'
@@ -24,8 +25,10 @@ const detailOpen = ref(false),
   detailLoading = ref(false),
   detailError = ref(''),
   detailId = ref('')
+const submissionKey = createSubmissionKey()
 let detailSequence = 0
 function open() {
+  submissionKey.reset()
   name.value = ''
   selected.value = []
   error.value = ''
@@ -40,7 +43,7 @@ async function submit() {
   busy.value = true
   error.value = ''
   try {
-    const response = await client.post<ApiResponse<{ batch_id: string }>>('/batches', {
+    const payload = {
       name: name.value.trim(),
       sku_ids: selected.value.map((sku) => sku.id),
       config: {
@@ -49,7 +52,11 @@ async function submit() {
         media_type: 'both',
         max_retries: 2,
       },
+    }
+    const response = await client.post<ApiResponse<{ batch_id: string }>>('/batches', payload, {
+      headers: { 'Idempotency-Key': submissionKey.forPayload(payload) },
     })
+    submissionKey.reset()
     show.value = false
     ui.notify('批次已创建')
     void list.reload(true)

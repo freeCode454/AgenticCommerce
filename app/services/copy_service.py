@@ -11,6 +11,7 @@ from app.models.copy import Copy
 from app.models.sku import Sku
 from app.models.task import Task
 from app.models.compliance import ComplianceReport
+from app.services.task_queue import TaskConflictError, refresh_batch
 
 logger = logging.getLogger("copy_service")
 
@@ -69,13 +70,19 @@ class CopyService(BaseService):
             raise ValueError("文案不存在")
         clean = {k: v for k, v in update_data.items() if v is not None}
         if clean:
-            await self.session.execute(update(Copy).where(Copy.id == copy_id, Copy.tenant_id == tenant_id, Copy.is_deleted == 0).values(**clean))
-            await self.session.execute(update(Task).where(
+            task = (await self.session.execute(select(Task).where(
                 Task.id == copy_obj.task_id, Task.tenant_id == tenant_id, Task.is_deleted == 0,
-            ).values(status="review_required"))
-            await self.session.execute(update(ComplianceReport).where(
-                ComplianceReport.task_id == copy_obj.task_id, ComplianceReport.tenant_id == tenant_id,
-                ComplianceReport.is_deleted == 0,
-            ).values(passed=0, status="outdated"))
+            ).with_for_update())).scalar_one_or_none()
+            current = task is not None and task.execution_id == copy_obj.execution_id
+            if current and task.status in {"pending", "running", "retrying"}:
+                raise TaskConflictError("任务仍在执行，请等待本次生成结束后编辑文案")
+            await self.session.execute(update(Copy).where(Copy.id == copy_id, Copy.tenant_id == tenant_id, Copy.is_deleted == 0).values(**clean))
+            if current:
+                task.status = "review_required"
+                await self.session.execute(update(ComplianceReport).where(
+                    ComplianceReport.task_id == copy_obj.task_id, ComplianceReport.tenant_id == tenant_id,
+                    ComplianceReport.execution_id == task.execution_id, ComplianceReport.is_deleted == 0,
+                ).values(passed=0, status="outdated"))
+                await refresh_batch(self.session, tenant_id, task.batch_id)
             await self.session.commit()
         return copy_id

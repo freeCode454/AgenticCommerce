@@ -23,9 +23,15 @@ from fastapi.exceptions import RequestValidationError
 # 预留生命周期管理
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.services.task_worker import TaskWorker
+    worker = TaskWorker()
+    app.state.task_worker = worker
     try:
+        if settings.TASK_WORKER_ENABLED:
+            await worker.start()
         yield
     finally:
+        await worker.stop()
         await redis_client.aclose()
         await engine.dispose()
 
