@@ -34,6 +34,7 @@ test('登录失败、密码切换、记住邮箱、登录返回原页及退出',
   expect(await page.evaluate(() => localStorage.getItem('remembered-email'))).toBe(
     'qa@example.test',
   )
+  await page.locator('.account-menu > summary').click()
   await page.getByRole('button', { name: '退出登录' }).click()
   await expect(page).toHaveURL(/\/login$/)
   expect(await page.evaluate(() => localStorage.getItem('token'))).toBeNull()
@@ -663,6 +664,10 @@ for (const width of [1440, 360]) {
     }
     await page.goto('/dashboard')
     await ready(page)
+    await page.evaluate(() => window.scrollTo(0, 480))
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0)
+    await expect.poll(async () => (await page.locator('.app-header').boundingBox())?.y).toBe(0)
+    await expect(page.getByRole('button', { name: '搜索功能页面', exact: true })).toBeVisible()
     const trigger = page.locator('.account-menu > summary')
     await trigger.focus()
     await page.keyboard.press('Enter')
@@ -683,9 +688,7 @@ for (const width of [1440, 360]) {
     await expect(account).toBeHidden()
     await noOverflow(page)
     if (width === 360) await page.getByRole('button', { name: '打开导航' }).click()
-    const profile = await page.locator('.sidebar-profile').boundingBox()
-    expect(profile).not.toBeNull()
-    expect(profile!.y + profile!.height).toBeLessThanOrEqual(901)
+    await expect(page.locator('.organization, .sidebar-profile')).toHaveCount(0)
     if (width === 360) await page.keyboard.press('Escape')
     await trigger.click()
     await account.getByRole('button', { name: '退出登录' }).click()

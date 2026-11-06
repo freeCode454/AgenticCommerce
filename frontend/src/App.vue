@@ -159,15 +159,6 @@ onUnmounted(() => {
       <RouterLink to="/dashboard" class="brand-link" aria-label="AgenticCommerce 工作台">
         <BrandLogo />
       </RouterLink>
-      <div class="organization">
-        <span class="organization-symbol"><AppIcon name="box" :size="19" /></span>
-        <div>
-          <strong :title="user.userInfo?.tenant_name">
-            {{ user.userInfo?.tenant_name || '当前工作空间' }}
-          </strong>
-          <small>当前工作空间</small>
-        </div>
-      </div>
       <nav class="sidebar-nav">
         <section v-for="group in groups" :key="group.title">
           <h2>{{ group.title }}</h2>
@@ -187,16 +178,6 @@ onUnmounted(() => {
           </RouterLink>
         </section>
       </nav>
-      <div class="sidebar-profile">
-        <span class="avatar">{{ initial }}</span>
-        <div>
-          <strong :title="user.userInfo?.name">{{ user.userInfo?.name || '已登录用户' }}</strong>
-          <small>{{ roleLabel }}</small>
-        </div>
-        <button class="icon-button" aria-label="退出登录" title="退出登录" @click="logout">
-          <AppIcon name="logout" :size="18" />
-        </button>
-      </div>
     </aside>
     <div class="main-wrapper" :inert="compact && mobileOpen">
       <header class="app-header">
