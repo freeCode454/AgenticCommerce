@@ -174,6 +174,7 @@ async def test_zip_requires_current_review_and_archived_round(context, monkeypat
 
     from app.api.v1 import assets as asset_api, packages
     from app.models.asset import Asset
+    from app.services.delivery_content import DELIVERY_MEDIA
 
     client, session = context["client"], context["session"]
     task_id, tenant_id = context["task"], context["tenant_a"]
@@ -187,7 +188,7 @@ async def test_zip_requires_current_review_and_archived_round(context, monkeypat
     assets = [
         Asset(**common, type=kind, sub_type=subtype, generation_round=1, status="completed",
               url="https://expired.example.test/file")
-        for kind, subtype in packages.DELIVERY_MEDIA
+        for kind, subtype in DELIVERY_MEDIA
     ]
     previous = Asset(
         **common, type="image", sub_type="main", generation_round=0, status="completed",
@@ -199,6 +200,24 @@ async def test_zip_requires_current_review_and_archived_round(context, monkeypat
     url = f"/api/v1/packages/{task_id}/download"
     manifest = (await client.post("/api/v1/packages/export", json={"task_id": task_id})).json()["data"]
     assert manifest["download_archive_url"] is None
+    assert "人工审核" in manifest["download_block_reason"]
+    assert (await client.get(url)).status_code == 409
+
+    approval_url = f"/api/v1/compliance/tasks/{task_id}/human-review"
+    approval = {"report_id": review.id, "decision": "approved"}
+    operator = create_access_token({"user_id": context["operator"], "tenant_id": tenant_id, "role": "admin"})
+    assert (await client.post(approval_url, json=approval, headers={"Authorization": "Bearer " + operator})).status_code == 403
+    assert (await client.post(approval_url, json={**approval, "report_id": uuid.uuid4().hex})).status_code == 409
+    assert (await client.post(approval_url, json={"report_id": review.id, "decision": "rejected"})).status_code == 422
+    response = await client.post(approval_url, json=approval)
+    assert response.status_code == 200
+    assert response.json()["data"]["human_review"]["reviewer_id"] == context["admin"]
+    assert (await client.post(approval_url, json=approval)).status_code == 200
+    assert (await client.post(approval_url, json={
+        **approval, "decision": "rejected", "note": "Needs changes",
+    })).status_code == 409
+
+    manifest = (await client.post("/api/v1/packages/export", json={"task_id": task_id})).json()["data"]
     assert "正在归档" in manifest["download_block_reason"]
     assert (await client.get(url)).status_code == 409
 
@@ -228,7 +247,8 @@ async def test_zip_requires_current_review_and_archived_round(context, monkeypat
         }
         assert json.loads(bundle.read("copy.json"))["title"] == "Approved copy"
         assert bundle.read("image/main.png") == b"fixture-main"
-        assert json.loads(bundle.read("review.json"))["passed"] == 1
+        audit = json.loads(bundle.read("review.json"))
+        assert audit["passed"] == 1 and audit["human_review"]["decision"] == "approved"
 
     media_url = manifest["media_assets"][0]["url"]
     assert (await client.get(media_url)).status_code == 200
@@ -251,6 +271,7 @@ async def test_zip_requires_current_review_and_archived_round(context, monkeypat
     response = await client.put(f"/api/v1/copies/{copy.id}", json={"title": "Pending new review"})
     assert response.status_code == 200
     assert (await client.get(url)).status_code == 409
+    assert (await client.post(approval_url, json=approval)).status_code == 409
 
 
 async def test_editing_copy_invalidates_previous_approval(context):
@@ -263,6 +284,69 @@ async def test_editing_copy_invalidates_previous_approval(context):
     await context["session"].refresh(report)
     assert report.passed == 0 and report.status == "outdated"
     assert (await context["client"].post("/api/v1/packages/export",json={"task_id":context["task"]})).status_code == 409
+
+
+@pytest.mark.parametrize("edit_during_review", [False, True])
+async def test_copy_only_review_reuses_media_and_discards_superseded_result(context, monkeypatch, edit_during_review):
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import select
+    from app.models.asset import Asset
+    from app.models.task_node_run import TaskNodeRun
+    from app.services.compliance_service import ComplianceService
+    from app.services.copy_service import CopyService
+    from app.services.delivery_content import DELIVERY_MEDIA
+
+    client, session = context["client"], context["session"]
+    task_id, tenant_id = context["task"], context["tenant_a"]
+    task = await session.get(Task, task_id)
+    task.execution_id = execution_id = uuid.uuid4().hex
+    common = {"tenant_id": tenant_id, "sku_id": context["sku_a"], "task_id": task_id,
+              "execution_id": execution_id}
+    copy = Copy(**common, title="Original copy", bullets=[f"Fact {i}" for i in range(5)],
+                description="Product description", keywords=[f"Keyword {i}" for i in range(5)])
+    report = ComplianceReport(**common, score=96, passed=1, status="passed")
+    assets = [Asset(**common, type=kind, sub_type=subtype, generation_round=0, status="completed",
+                    url="https://example.test/file") for kind, subtype in DELIVERY_MEDIA]
+    session.add_all([copy, report, *assets])
+    await session.flush()
+    asset_ids = {asset.id for asset in assets}
+    assert (await client.post(f"/api/v1/compliance/tasks/{task_id}/human-review", json={
+        "report_id": report.id, "decision": "rejected", "note": "Revise the title",
+    })).json()["data"]["human_review"]["decision"] == "rejected"
+    manifest = (await client.post("/api/v1/packages/export", json={"task_id": task_id})).json()["data"]
+    assert "已驳回" in manifest["download_block_reason"]
+    assert (await client.put(f"/api/v1/copies/{copy.id}", json={"title": "Edited title"})).status_code == 200
+
+    async def evaluate(title, content, *, facts):
+        assert title == "Edited title" and "Product description" in content and facts["name"] == "A"
+        if edit_during_review:
+            await CopyService(session).update_copy(tenant_id, copy.id, {"title": "Newer title"})
+        return {
+            "score": 98, "passed": 1, "dimensions": {}, "violations": [], "suggestions": [],
+        }, {"cost": 0.001, "prompt_tokens": 100}, True
+
+    model = AsyncMock(side_effect=evaluate)
+    monkeypatch.setattr(ComplianceService, "evaluate_copy", model)
+    url = f"/api/v1/compliance/tasks/{task_id}/copy-review"
+    body, headers = {"report_id": report.id}, {"Idempotency-Key": "copy-review-test"}
+    response = await client.post(url, json=body, headers=headers)
+    assert response.status_code == 200
+    reviewed = response.json()["data"]
+    assert reviewed["status"] == ("outdated" if edit_during_review else "passed")
+    assert reviewed["human_review"]["decision"] == "pending"
+    replay = await client.post(url, json=body, headers=headers)
+    assert replay.json()["data"]["id"] == reviewed["id"]
+    model.assert_awaited_once()
+
+    detail = (await client.get(f"/api/v1/tasks/{task_id}")).json()["data"]
+    assert detail["task"]["execution_id"] == execution_id
+    assert detail["task"]["status"] == ("review_required" if edit_during_review else "completed")
+    assert {asset["id"] for asset in detail["assets"]} == asset_ids
+    costs = list(await session.scalars(select(TaskNodeRun).where(
+        TaskNodeRun.tenant_id == tenant_id, TaskNodeRun.task_id == task_id,
+    )))
+    assert len(costs) == 1 and costs[0].node_name == "copy_review" and costs[0].cost == 0.001
 
 
 @pytest_asyncio.fixture

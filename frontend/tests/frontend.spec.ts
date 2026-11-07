@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { setup, ready, noOverflow, paths, task, copy } from './fixtures'
+import { setup, ready, noOverflow, paths, task, copy, report } from './fixtures'
 
 test('登录失败、密码切换、记住邮箱、登录返回原页及退出', async ({ page }) => {
   const h = await setup(page, { auth: false })
@@ -253,7 +253,7 @@ test('真实零值、费用分布隐藏、平台刊登入口禁用', async ({ pa
   await expect(page.getByText('DO NOT RENDER')).toHaveCount(0)
   await page.goto('/packages')
   await ready(page)
-  await expect(page.getByText('通过最新审核且归档完整的任务，可在交付清单中下载 ZIP。')).toBeVisible()
+  await expect(page.getByText('通过机器审核及人工批准且归档完整的任务，可在交付清单中下载 ZIP。')).toBeVisible()
   await page.goto('/listings')
   await ready(page)
   await expect(page.getByRole('button', { name: '发布到平台 · 尚未开放' })).toBeDisabled()
@@ -509,6 +509,59 @@ test('交付清单展示接口返回内容，独立审核不自动调用模型',
   await page.getByRole('button', { name: '检查一段文案' }).click()
   await expect(page.getByRole('dialog', { name: '检查文案' })).toContainText('可能产生费用')
   expect(h.writes.map((r) => r.path)).toEqual(['/packages/export'])
+})
+
+test('工作台先单独重审文案，再由管理员批准交付', async ({ page }) => {
+  const h = await setup(page)
+  let taskStatus = 'review_required'
+  let current = {
+    ...report, status: 'outdated', passed: 0,
+    human_review: { decision: 'pending', note: '', reviewed_at: '' },
+  }
+  h.handler = async (route, path) => {
+    if (path === '/tasks/task-1') {
+      await route.fulfill({ json: { code: 200, data: {
+        task: { ...task, status: taskStatus }, assets: [], copy,
+        compliance_report: current, review_media_complete: true,
+      } } })
+      return true
+    }
+    if (path === '/compliance/tasks/task-1/copy-review') {
+      expect(route.request().headers()['idempotency-key']).toBeTruthy()
+      expect(route.request().postDataJSON()).toEqual({ report_id: 'report-1' })
+      current = { ...current, id: 'review-copy-1', status: 'passed', passed: 1 }
+      taskStatus = 'completed'
+    } else if (path === '/compliance/tasks/task-1/human-review') {
+      expect(route.request().postDataJSON()).toEqual({
+        report_id: 'review-copy-1', decision: 'approved', note: '',
+      })
+      current = { ...current, human_review: { ...current.human_review, decision: 'approved' } }
+    } else {
+      return false
+    }
+    await route.fulfill({ json: { code: 200, data: current } })
+    return true
+  }
+
+  await page.goto('/workbench/task-1?tab=review')
+  const reviewButton = page.getByRole('button', { name: '仅重审文案' })
+  await expect(reviewButton).toBeVisible()
+  await reviewButton.click()
+  const confirm = page.getByRole('dialog', { name: '仅重新审核文案' })
+  await expect(confirm).toContainText('可能产生费用')
+  expect(h.writes).toHaveLength(0)
+  await confirm.getByRole('button', { name: '开始重审' }).click()
+
+  await page.getByRole('button', { name: '批准交付', exact: true }).click()
+  const approval = page.getByRole('dialog', { name: '确认批准交付' })
+  const save = approval.getByRole('button', { name: '保存审核结论' })
+  await expect(save).toBeDisabled()
+  await approval.getByRole('checkbox').check()
+  await save.click()
+  await expect(page.getByText('人工已批准', { exact: true })).toBeVisible()
+  expect(h.writes.map((entry) => entry.path)).toEqual([
+    '/compliance/tasks/task-1/copy-review', '/compliance/tasks/task-1/human-review',
+  ])
 })
 
 test('交付 ZIP 使用当前身份下载并显示接口错误', async ({ page }) => {

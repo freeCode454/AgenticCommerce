@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Report } from '@/types'
-import { outputText } from '@/utils/format'
+import { dateText, outputText } from '@/utils/format'
 import StatusBadge from './StatusBadge.vue'
 defineProps<{ report: Report }>()
 const dimensions: Record<string, string> = {
@@ -18,8 +18,18 @@ const dimensions: Record<string, string> = {
     </span>
     <div>
       <StatusBadge :status="report.status || (report.passed ? 'passed' : 'rejected')" />
-      <p class="subtle spaced">自动审核结果，交付前仍需结合实际内容复核。</p>
+      <p class="subtle spaced">
+        {{ report.scope === 'copy' ? '本次机器审核仅检查文案。' : '机器辅助审核结果，素材画面需人工复核。' }}
+      </p>
     </div>
+  </div>
+  <div v-if="report.human_review && (report.passed || report.human_review.decision !== 'pending')" class="notice mb-5">
+    <StatusBadge :status="`human_${report.human_review.decision}`" />
+    <span v-if="report.human_review.reviewed_at">
+      {{ dateText(report.human_review.reviewed_at) }}
+      {{ report.human_review.note }}
+      <small v-if="report.status === 'outdated'"> · 历史结论</small>
+    </span>
   </div>
   <div v-if="report.dimensions" class="score-dimensions">
     <div v-for="(value, key) in report.dimensions" :key="key" class="dimension">

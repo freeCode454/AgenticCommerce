@@ -78,6 +78,12 @@ export interface CopyContent {
   status?: string
   create_time?: string
 }
+export interface HumanReview {
+  decision: 'pending' | 'approved' | 'rejected'
+  reviewer_id?: string | null
+  reviewed_at?: string | null
+  note?: string | null
+}
 export interface Report {
   id?: string
   task_id?: string
@@ -86,6 +92,8 @@ export interface Report {
   score: number
   passed: number
   status?: string
+  scope?: 'generation' | 'copy'
+  human_review?: HumanReview
   dimensions?: Record<string, number>
   violations?: unknown[]
   suggestions?: string[]
@@ -105,6 +113,7 @@ export interface NodeRun {
   create_time?: string
 }
 export interface TaskDetail {
+  review_media_complete?: boolean
   remote_jobs?: {
     id: string
     remote_id?: string
@@ -170,7 +179,7 @@ export interface DeliveryManifest {
   sku_id: string
   copywriting: CopyContent
   media_assets: { type: string; sub_type?: string; url: string }[]
-  quality_audit: Pick<Report, 'score' | 'passed' | 'suggestions'>
+  quality_audit: Pick<Report, 'score' | 'passed' | 'suggestions' | 'human_review'>
   download_archive_url: string | null
   download_block_reason?: string | null
 }

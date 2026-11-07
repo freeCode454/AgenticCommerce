@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import client from '@/api/client'
 import { useTaskWorkspace } from '@/composables/useTaskWorkspace'
@@ -13,6 +13,7 @@ import StatusBadge from '@/components/ui/StatusBadge.vue'
 import AppDialog from '@/components/ui/AppDialog.vue'
 import MediaPreview from '@/components/ui/MediaPreview.vue'
 import ReviewResult from '@/components/ui/ReviewResult.vue'
+import DeliveryReviewActions from '@/components/ui/DeliveryReviewActions.vue'
 const route = useRoute(),
   ui = useUiStore(),
   taskId = computed(() => String(route.params.taskId || ''))
@@ -34,6 +35,9 @@ const tab = ref('copy'),
   selected = ref(''),
   retrying = ref(false)
 const retryKey = createSubmissionKey()
+watch([taskId, () => route.query.tab], () => {
+  tab.value = route.query.tab === 'review' ? 'review' : 'copy'
+}, { immediate: true })
 const remoteStatuses: Record<string, string> = {
   submitting: '正在提交',
   submitted: '已提交',
@@ -56,7 +60,8 @@ const steps = [
 ]
 const history = computed(() =>
   nodes.value
-    .filter((node) => node.node_name === selected.value)
+    .filter((node) => node.node_name === selected.value
+      || (selected.value === 'quality_reviewer' && node.node_name === 'copy_review'))
     .slice()
     .reverse(),
 )
@@ -68,19 +73,9 @@ const imageAssets = computed(
   ),
   videoAssets = computed(() => detail.value?.assets.filter((asset) => asset.type === 'video') || [])
 const completed = computed(
-  () => Object.values(latest.value).filter((node) => node.status === 'success').length,
+  () => steps.filter((step) => latest.value[step.key]?.status === 'success').length,
 )
-const reviewReport = computed(() =>
-  detail.value?.compliance_report
-    ? {
-        ...detail.value.compliance_report,
-        status:
-          detail.value.task.status === 'review_required'
-            ? 'outdated'
-            : detail.value.compliance_report.status,
-      }
-    : null,
-)
+const reviewReport = computed(() => detail.value?.compliance_report)
 async function retry() {
   if (retrying.value || running.value) return
   if (
@@ -158,7 +153,8 @@ function openNode(key: string) {
             <AppIcon name="refresh" :size="17" />
           </button>
           <button
-            v-if="['failed', 'review_required'].includes(detail.task.status)"
+            v-if="detail.task.status === 'failed' || reviewReport?.human_review?.decision === 'rejected'
+              || (detail.task.status === 'review_required' && !detail.review_media_complete)"
             class="btn btn-secondary btn-sm"
             :disabled="retrying"
             @click="retry"
@@ -179,9 +175,8 @@ function openNode(key: string) {
       </div>
       <div v-if="detail.task.status === 'review_required'" class="notice notice-warning">
         <AppIcon name="info" />
-        <span>
-          文案修改后，旧审核已失效。当前只支持完整重新生成，可能覆盖手工编辑的文案并产生费用。
-        </span>
+        <span>文案待重新审核。可以在审核标签重审文案并复用本轮素材。</span>
+        <button class="text-button" @click="tab = 'review'">前往审核</button>
       </div>
       <div v-if="detail.task.status === 'pending'" class="notice">
         <AppIcon name="clock" />
@@ -360,6 +355,7 @@ function openNode(key: string) {
                 description="审核节点执行后，会显示真实评分及改进建议。"
                 icon="shield"
               />
+              <DeliveryReviewActions :key="detail.task.id" :detail="detail" @changed="refresh" />
               <RouterLink
                 v-if="detail.task.status === 'completed'"
                 to="/packages"

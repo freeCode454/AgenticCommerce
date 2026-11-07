@@ -10,11 +10,11 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.api.task_config import TaskConfig
-from app.models.asset import Asset
+from app.services.delivery_content import (
+    complete_media, current_media, latest_copy, latest_report, report_data, report_status,
+)
 from app.models.base import generate_uuid32
 from app.models.batch import Batch
-from app.models.compliance import ComplianceReport
-from app.models.copy import Copy
 from app.models.provider_job import ProviderJob
 from app.models.sku import Sku
 from app.models.task import Task
@@ -108,9 +108,9 @@ class TaskService(BaseService):
             raise ValueError("任务不存在")
 
         # 关联查询：仅展示当前执行的产物，历史费用与记录仍保留。
-        copy_obj = (await self.session.execute(select(Copy).where(Copy.task_id == task_id, Copy.tenant_id == tenant_id, Copy.is_deleted == 0, Copy.execution_id == task.execution_id).order_by(Copy.create_time.desc(), Copy.id.desc()).limit(1))).scalar_one_or_none()
-        assets = (await self.session.execute(select(Asset).where(Asset.task_id == task_id, Asset.tenant_id == tenant_id, Asset.is_deleted == 0, Asset.execution_id == task.execution_id))).scalars().all()
-        report_obj = (await self.session.execute(select(ComplianceReport).where(ComplianceReport.task_id == task_id, ComplianceReport.tenant_id == tenant_id, ComplianceReport.is_deleted == 0, ComplianceReport.execution_id == task.execution_id).order_by(ComplianceReport.create_time.desc(), ComplianceReport.id.desc()).limit(1))).scalar_one_or_none()
+        copy_obj = await latest_copy(self.session, task)
+        assets = await current_media(self.session, task)
+        report_obj = await latest_report(self.session, task)
         sku_obj = (await self.session.execute(select(Sku).where(Sku.id == task.sku_id, Sku.tenant_id == tenant_id, Sku.is_deleted == 0))).scalar_one_or_none()
         execution = (await self.session.execute(select(TaskExecution).where(
             TaskExecution.id == task.execution_id, TaskExecution.tenant_id == tenant_id,
@@ -150,11 +150,8 @@ class TaskService(BaseService):
                 }
                 for a in assets
             ],
-            "compliance_report": {
-                "score": report_obj.score, "passed": report_obj.passed,
-                "dimensions": report_obj.dimensions, "violations": report_obj.violations,
-                "suggestions": report_obj.suggestions,
-            } if report_obj else None,
+            "compliance_report": report_data(report_obj) if report_obj else None,
+            "review_media_complete": complete_media(task, assets),
         }
 
     async def get_node_runs(self, tenant_id: str, task_id: str) -> list:
@@ -205,6 +202,10 @@ class TaskService(BaseService):
         ))).first()
         if task.status in {"pending", "running", "retrying"} or active:
             raise TaskConflictError("任务已排队或正在执行，请勿重复触发")
+        if task.status == "review_required":
+            report = await latest_report(self.session, task)
+            if report and report_status(report) == "reviewing":
+                raise TaskConflictError("文案审核正在进行，请等待结果后再重新生成")
 
         try:
             TaskConfig.model_validate(task.config or {})

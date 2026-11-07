@@ -77,7 +77,7 @@ async function check() {
   </PageHeading>
   <div class="notice mb-5">
     <AppIcon name="info" :size="17" />
-    <span>审核报告为模型辅助建议。编辑文案后，旧报告会标记失效，需要重新审核。</span>
+    <span>机器审核通过后，由管理员在关联工作台核对文案和素材并提交人工结论。</span>
   </div>
   <PageState
     :loading="list.loading"
@@ -112,10 +112,11 @@ async function check() {
             </td>
             <td>
               <StatusBadge
-                :status="
-                  report.status === 'outdated' ? 'outdated' : report.passed ? 'passed' : 'rejected'
-                "
+                :status="report.status || (report.passed ? 'passed' : 'rejected')"
               />
+              <small v-if="report.passed && report.human_review">
+                <StatusBadge :status="`human_${report.human_review.decision}`" />
+              </small>
             </td>
             <td>{{ dateText(report.create_time) }}</td>
             <td>
@@ -143,7 +144,7 @@ async function check() {
       <RouterLink
         v-if="selected?.task_id"
         class="btn btn-secondary mt-5"
-        :to="`/workbench/${selected.task_id}`"
+        :to="{ path: `/workbench/${selected.task_id}`, query: { tab: 'review' } }"
         @click="open = false"
       >
         打开关联工作台

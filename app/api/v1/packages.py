@@ -17,13 +17,11 @@ from starlette.background import BackgroundTask
 from app.core.deps import get_db, get_current_user_and_tenant
 from app.models.task import Task
 from app.models.sku import Sku
-from app.models.copy import Copy
 from app.models.asset import Asset
-from app.models.compliance import ComplianceReport
+from app.services.delivery_content import complete_media, current_media, human_review, latest_copy, latest_report
 from app.services.media_archive import CHUNK_SIZE, MEDIA_EXTENSIONS, archive_metadata_valid, iter_object
 
 router = APIRouter(prefix="/packages", tags=["交付打包下载"])
-DELIVERY_MEDIA = {("image", "main"), ("image", "scene"), ("image", "detail"), ("video", "product_showcase")}
 
 class PackageExportRequest(BaseModel):
     task_id: str
@@ -77,23 +75,12 @@ async def load_delivery(
     if task.status != "completed":
         raise HTTPException(status_code=409, detail="任务尚未完成或需要重新审核")
 
-    report_obj = (await db.execute(select(ComplianceReport).where(
-        ComplianceReport.task_id == task_id, ComplianceReport.tenant_id == tenant_id,
-        ComplianceReport.is_deleted == 0, ComplianceReport.execution_id == task.execution_id,
-    ).order_by(ComplianceReport.create_time.desc(), ComplianceReport.id.desc()).limit(1))).scalar_one_or_none()
+    report_obj = await latest_report(db, task)
     if report_obj is None or report_obj.passed != 1 or report_obj.status != "passed":
         raise HTTPException(status_code=409, detail="交付前必须通过最新审核")
 
-    copy_obj = (await db.execute(select(Copy).where(
-        Copy.task_id == task_id, Copy.tenant_id == tenant_id, Copy.is_deleted == 0,
-        Copy.execution_id == task.execution_id,
-    ).order_by(Copy.create_time.desc(), Copy.id.desc()).limit(1))).scalar_one_or_none()
-    assets = list(await db.scalars(select(Asset).where(
-        Asset.task_id == task_id, Asset.tenant_id == tenant_id,
-        Asset.is_deleted == 0, Asset.execution_id == task.execution_id,
-    ).order_by(Asset.type, Asset.sub_type, Asset.id)))
-    if any(asset.generation_round is not None for asset in assets):
-        assets = [asset for asset in assets if asset.generation_round == task.retry_count]
+    copy_obj = await latest_copy(db, task)
+    assets = await current_media(db, task)
     if copy_obj is None or not assets or any(a.is_mock for a in assets):
         raise HTTPException(status_code=409, detail="缺少真实交付物")
 
@@ -114,16 +101,17 @@ async def load_delivery(
             "score": report_obj.score,
             "passed": report_obj.passed,
             "suggestions": report_obj.suggestions,
+            "human_review": human_review(report_obj),
         },
     }
 
 
-def download_block_reason(task: Task, assets: list[Asset]) -> str | None:
-    if (
-        not task.execution_id or len(assets) != len(DELIVERY_MEDIA)
-        or {(asset.type, asset.sub_type) for asset in assets} != DELIVERY_MEDIA
-        or (task.retry_count > 0 and any(asset.generation_round is None for asset in assets))
-    ):
+def download_block_reason(task: Task, assets: list[Asset], decision: str) -> str | None:
+    if decision == "rejected":
+        return "人工审核已驳回，请在工作台查看原因。"
+    if decision != "approved":
+        return "待管理员人工审核通过后开放下载。"
+    if not complete_media(task, assets):
         return "无法确认本次审核对应的完整媒体，暂不能打包。"
     if any(asset.archive_status == "failed" for asset in assets):
         return "有媒体归档失败，请在素材库查看原因。"
@@ -143,7 +131,7 @@ async def export_package(
     user_tenant: dict = Depends(get_current_user_and_tenant),
 ) -> dict:
     task, assets, manifest = await load_delivery(db, user_tenant["tenant_id"], req.task_id)
-    reason = download_block_reason(task, assets)
+    reason = download_block_reason(task, assets, manifest["quality_audit"]["human_review"]["decision"])
     return {
         "code": 200,
         "data": {
@@ -176,7 +164,7 @@ async def download_package(
     user_tenant: dict = Depends(get_current_user_and_tenant),
 ) -> StreamingResponse:
     task, assets, manifest = await load_delivery(db, user_tenant["tenant_id"], task_id, lock=True)
-    reason = download_block_reason(task, assets)
+    reason = download_block_reason(task, assets, manifest["quality_audit"]["human_review"]["decision"])
     if reason:
         raise HTTPException(status_code=409, detail=reason)
 

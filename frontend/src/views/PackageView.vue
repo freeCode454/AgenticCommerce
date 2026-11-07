@@ -11,6 +11,7 @@ import PaginationBar from '@/components/ui/PaginationBar.vue'
 import AppDialog from '@/components/ui/AppDialog.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import ArchiveDownload from '@/components/ui/ArchiveDownload.vue'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { archivePath } from '@/utils/archive'
 const ui = useUiStore(),
   list = useCollection<PackageItem>('/packages', 10),
@@ -50,7 +51,7 @@ async function view(id: string) {
   <div class="notice mb-5">
     <AppIcon name="info" :size="18" />
     <span>
-      通过最新审核且归档完整的任务，可在交付清单中下载 ZIP。
+      通过机器审核及人工批准且归档完整的任务，可在交付清单中下载 ZIP。
     </span>
   </div>
   <PageState
@@ -110,8 +111,12 @@ async function view(id: string) {
       <template v-if="manifest">
         <div class="row between wrap">
           <span class="status-badge status-success">
-            最新审核通过 · {{ manifest.quality_audit.score }} 分
+            机器审核通过 · {{ manifest.quality_audit.score }} 分
           </span>
+          <StatusBadge
+            v-if="manifest.quality_audit.human_review"
+            :status="`human_${manifest.quality_audit.human_review.decision}`"
+          />
           <button class="text-button" @click="ui.copy(fullCopy(manifest.copywriting))">
             <AppIcon name="copy" :size="15" />
             复制文案
@@ -162,6 +167,13 @@ async function view(id: string) {
         <div v-if="!manifest.download_archive_url" class="notice mt-5">
           <span>{{ manifest.download_block_reason || '当前清单没有可下载的 ZIP。' }}</span>
           <button class="text-button" @click="view(selected)">刷新清单</button>
+          <RouterLink
+            v-if="manifest.quality_audit.human_review?.decision && manifest.quality_audit.human_review.decision !== 'approved'"
+            class="text-button"
+            :to="{ path: `/workbench/${manifest.task_id}`, query: { tab: 'review' } }"
+          >
+            查看审核
+          </RouterLink>
         </div>
       </template>
     </PageState>

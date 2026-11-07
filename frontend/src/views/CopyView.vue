@@ -172,7 +172,7 @@ watch(open, (value) => {
     <PageState :loading="fetching" :error="loadError" @retry="selected && view(selected, editing)">
       <form v-if="editing" id="copy-edit" class="form-stack" @submit.prevent="save">
         <p class="notice notice-warning">
-          保存会使原审核结果失效，需要重新审核。重新运行任务可能产生模型费用。
+          修改当前任务的文案会使原审核结论失效。保存后可到工作台仅重审文案，沿用本轮素材。
         </p>
         <p v-if="failure" class="notice notice-error" role="alert">
           {{ failure }}

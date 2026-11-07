@@ -12,6 +12,12 @@ const labels: Record<string, string> = {
   passed: '审核通过',
   rejected: '未通过',
   outdated: '审核已失效',
+  reviewing: '文案审核中',
+  review_interrupted: '审核已中断',
+  review_error: '审核服务异常',
+  human_pending: '待人工审核',
+  human_approved: '人工已批准',
+  human_rejected: '人工已驳回',
   indexed: '已索引',
   active: '正常',
   disabled: '已停用',
@@ -20,11 +26,11 @@ const labels: Record<string, string> = {
   draft: '草稿',
 }
 const tone = computed(() =>
-  ['completed', 'success', 'passed', 'indexed', 'active', 'ready'].includes(props.status || '')
+  ['completed', 'success', 'passed', 'human_approved', 'indexed', 'active', 'ready'].includes(props.status || '')
     ? 'success'
-    : ['failed', 'rejected', 'unavailable', 'disabled'].includes(props.status || '')
+    : ['failed', 'rejected', 'human_rejected', 'review_error', 'unavailable', 'disabled'].includes(props.status || '')
       ? 'danger'
-      : ['running', 'retrying', 'review_required', 'outdated', 'pending'].includes(
+      : ['running', 'retrying', 'review_required', 'reviewing', 'review_interrupted', 'human_pending', 'outdated', 'pending'].includes(
             props.status || '',
           )
         ? 'warning'
