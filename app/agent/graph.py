@@ -18,7 +18,7 @@ from app.agent.nodes.visual_designer import visual_designer_node
 from app.agent.recorder import record_node_execution
 from app.agent.state import AgentState
 from app.clients.wan_video import RemoteVideoPending
-from app.core.task_execution import active_execution
+from app.core.task_execution import ExecutionSupersededError, active_execution
 from app.services.workflow_checkpoint import checkpoint_node, frozen_provider_scope
 
 logger = logging.getLogger("agent_graph")
@@ -62,7 +62,7 @@ def observed_node(name, function):
                 result = await function(state)
             await checkpoint_node(name, state, result)
             return result
-        except RemoteVideoPending:
+        except (RemoteVideoPending, ExecutionSupersededError):
             raise
         except Exception as error:
             from app.core.generation import GenerationOutputError

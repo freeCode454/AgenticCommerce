@@ -3,6 +3,7 @@
 from datetime import timedelta
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.postgres import AsyncSessionLocal
 from app.clients.wan_video import (
@@ -14,9 +15,10 @@ from app.clients.wan_video import (
 from app.conf.config import settings
 from app.core.provider_context import active_providers
 from app.core.provider_keys import decrypt_api_key, encrypt_api_key
-from app.core.task_execution import active_execution, fence_execution
+from app.core.task_execution import ExecutionContext, ExecutionSupersededError, active_execution, fence_execution
 from app.models.base import generate_uuid32, utc_now
 from app.models.provider_job import ProviderJob
+from app.models.task_execution import TaskExecution
 from app.services.task_queue import request_hash
 
 
@@ -32,6 +34,22 @@ async def owned_job(session, context, round_number: int):
             )
         )
     ).scalar_one_or_none()
+
+
+async def lock_submission_receipt(session: AsyncSession, context: ExecutionContext) -> bool:
+    """Keep a late provider receipt for accounting without restarting a canceled attempt."""
+    try:
+        await fence_execution(session)
+    except ExecutionSupersededError:
+        canceled = await session.scalar(select(TaskExecution.id).where(
+            TaskExecution.id == context.execution_id, TaskExecution.task_id == context.task_id,
+            TaskExecution.tenant_id == context.tenant_id, TaskExecution.is_deleted == 0,
+            TaskExecution.status == "canceled",
+        ).with_for_update())
+        if canceled is None:
+            raise
+        return False
+    return True
 
 
 async def generate_durable_video(
@@ -129,7 +147,7 @@ async def generate_durable_video(
             remote_id = valid_remote_id(submitted.get("task_id"))
         except (VideoProviderError, ValueError, TypeError, AttributeError) as error:
             async with AsyncSessionLocal() as session:
-                await fence_execution(session)
+                active = await lock_submission_receipt(session, context)
                 job = await owned_job(session, context, round_number)
                 job.status = (
                     "submission_unknown"
@@ -142,16 +160,21 @@ async def generate_durable_video(
                     else "视频提交响应无效，未再次提交。"
                 )
                 await session.commit()
+            if not active:
+                raise ExecutionSupersededError("任务已取消") from None
             raise
         async with AsyncSessionLocal() as session:
-            await fence_execution(session)
+            active = await lock_submission_receipt(session, context)
             job = await owned_job(session, context, round_number)
             job.remote_id, job.status, job.remote_status = (
                 remote_id,
                 "submitted",
                 "PENDING",
             )
+            job.error_message = None
             await session.commit()  # Persist ID before the first GET.
+        if not active:
+            raise ExecutionSupersededError("任务已取消")
 
     async with AsyncSessionLocal() as session:
         await fence_execution(session)

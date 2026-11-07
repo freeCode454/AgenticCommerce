@@ -16,7 +16,7 @@ from app.api.task_config import TaskConfig
 from app.clients.postgres import AsyncSessionLocal, engine
 from app.clients.wan_video import RemoteVideoPending, SubmissionUnknownError
 from app.conf.config import settings
-from app.core.task_execution import ExecutionContext, active_execution
+from app.core.task_execution import ExecutionContext, ExecutionSupersededError, active_execution
 from app.models.base import utc_now
 from app.models.provider_job import ProviderJob
 from app.models.sku import Sku
@@ -478,6 +478,11 @@ class TaskWorker:
             except SubmissionUnknownError as error:
                 if context:
                     await self.finish(context, "interrupted", str(error))
+                return False
+            except ExecutionSupersededError:
+                if context:
+                    await self.finish(context, "failed", "执行上下文已失效，请核对任务状态。")
+                await self.broadcast(tenant_id, task_id)
                 return False
             except asyncio.CancelledError:
                 if invoke:

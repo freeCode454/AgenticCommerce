@@ -511,6 +511,39 @@ test('交付清单展示接口返回内容，独立审核不自动调用模型',
   expect(h.writes.map((r) => r.path)).toEqual(['/packages/export'])
 })
 
+test('工作台确认后取消当前执行并保留远端任务记录', async ({ page }) => {
+  const h = await setup(page, { status: 'running' })
+  h.handler = async (route, path) => {
+    if (path === '/tasks/task-1') {
+      await route.fulfill({ json: { code: 200, data: {
+        task: {
+          ...task, status: h.status, execution_id: 'execution-1',
+          error_message: h.status === 'canceled' ? '已停止本地后续步骤。' : null,
+        },
+        assets: [],
+        remote_jobs: [{ id: 'job-1', remote_id: 'remote-video-1', status: 'submitted', round: 1 }],
+      } } })
+      return true
+    }
+    if (path !== '/tasks/task-1/cancel') return false
+    expect(route.request().postDataJSON()).toEqual({ execution_id: 'execution-1' })
+    h.status = 'canceled'
+    await route.fulfill({ json: { code: 200, data: { status: 'canceled' } } })
+    return true
+  }
+  await page.goto('/workbench/task-1')
+  await page.getByRole('button', { name: '取消任务', exact: true }).click()
+  const confirm = page.getByRole('dialog', { name: '取消本次生成' })
+  await expect(confirm).toContainText('可能继续执行或产生费用')
+  expect(h.writes).toHaveLength(0)
+  await confirm.getByRole('button', { name: '确认取消任务' }).click()
+  await expect(page.getByText('已取消', { exact: true })).toBeVisible()
+  await page.getByText('核对厂商任务', { exact: true }).click()
+  await expect(page.getByText('任务 ID：remote-video-1', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '取消任务', exact: true })).toHaveCount(0)
+  expect(h.writes.map((entry) => entry.path)).toEqual(['/tasks/task-1/cancel'])
+})
+
 test('工作台先单独重审文案，再由管理员批准交付', async ({ page }) => {
   const h = await setup(page)
   let taskStatus = 'review_required'

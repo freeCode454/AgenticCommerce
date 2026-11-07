@@ -6,6 +6,7 @@ import { useTaskWorkspace } from '@/composables/useTaskWorkspace'
 import { createSubmissionKey } from '@/utils/submissionKey'
 import { useUiStore } from '@/stores/ui'
 import { dateText, errorMessage, fullCopy, moneyText, outputText } from '@/utils/format'
+import type { ApiResponse } from '@/types'
 import PageHeading from '@/components/ui/PageHeading.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import PageState from '@/components/ui/PageState.vue'
@@ -33,7 +34,8 @@ const {
 const tab = ref('copy'),
   drawer = ref(false),
   selected = ref(''),
-  retrying = ref(false)
+  retrying = ref(false),
+  canceling = ref(false)
 const retryKey = createSubmissionKey()
 watch([taskId, () => route.query.tab], () => {
   tab.value = route.query.tab === 'review' ? 'review' : 'copy'
@@ -88,17 +90,43 @@ async function retry() {
     return
   retrying.value = true
   try {
-    await client.post(`/tasks/${taskId.value}/run`, undefined, {
+    const { data } = await client.post<ApiResponse<{ status: string }>>(`/tasks/${taskId.value}/run`, undefined, {
       headers: { 'Idempotency-Key': retryKey.forPayload(taskId.value) },
     })
     retryKey.reset()
-    ui.notify('已重新创建执行请求')
+    ui.notify(
+      ['pending', 'running', 'retrying'].includes(data.data.status)
+        ? '已返回排队或执行中的请求'
+        : '上次请求已经结束，请核对状态后再决定是否重新生成。',
+      'info',
+    )
     await refresh()
     reconnectNow()
   } catch (cause) {
     ui.notify(errorMessage(cause), 'error')
   } finally {
     retrying.value = false
+  }
+}
+async function cancel() {
+  const current = detail.value?.task
+  if (!current || !running.value || canceling.value) return
+  if (!(await ui.confirm(
+    '取消本次生成',
+    '取消后停止本地后续步骤。已经提交或正在提交给模型服务商的请求可能继续执行或产生费用。',
+    '确认取消任务',
+    true,
+  ))) return
+  canceling.value = true
+  try {
+    await client.post(`/tasks/${encodeURIComponent(current.id)}/cancel`, {
+      execution_id: current.execution_id ?? null,
+    })
+    if (taskId.value === current.id) await refresh()
+  } catch (cause) {
+    ui.notify(errorMessage(cause), 'error')
+  } finally {
+    canceling.value = false
   }
 }
 function openNode(key: string) {
@@ -152,17 +180,24 @@ function openNode(key: string) {
           <button class="icon-button" aria-label="刷新任务" :disabled="refreshing" @click="refresh">
             <AppIcon name="refresh" :size="17" />
           </button>
+          <button v-if="running" class="btn btn-secondary btn-sm" :disabled="canceling" @click="cancel">
+            {{ canceling ? '正在取消…' : '取消任务' }}
+          </button>
           <button
-            v-if="detail.task.status === 'failed' || reviewReport?.human_review?.decision === 'rejected'
+            v-if="['failed', 'canceled'].includes(detail.task.status) || reviewReport?.human_review?.decision === 'rejected'
               || (detail.task.status === 'review_required' && !detail.review_media_complete)"
             class="btn btn-secondary btn-sm"
-            :disabled="retrying"
+            :disabled="retrying || canceling"
             @click="retry"
           >
             <span v-if="retrying" class="spinner" />
             重新生成
           </button>
         </div>
+      </div>
+      <div v-if="detail.task.status === 'canceled'" class="notice">
+        <AppIcon name="info" />
+        <span>{{ detail.task.error_message || '已停止本地后续步骤。' }}</span>
       </div>
       <div v-if="detail.task.status === 'failed'" class="notice notice-danger">
         <AppIcon name="warning" />
@@ -201,6 +236,9 @@ function openNode(key: string) {
           }}
         </p>
         <p class="subtle">视频费用尚未从厂商账单核实，未计入当前费用合计。</p>
+        <p v-if="detail.task.status === 'canceled'" class="subtle">
+          下方保留远端任务的最后记录，可用远端 ID 核对厂商状态和费用。
+        </p>
         <div v-for="job in detail.remote_jobs" :key="job.id" class="form-section">
           <div class="row wrap">
             <span>第 {{ job.round }} 轮 · {{ job.model }}</span>

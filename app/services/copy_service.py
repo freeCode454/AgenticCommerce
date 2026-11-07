@@ -86,7 +86,8 @@ class CopyService(BaseService):
                 key != "status" and getattr(copy_obj, key) != value for key, value in clean.items()
             )
             if current and content_changed and await latest_copy(self.session, task) is copy_obj:
-                task.status = "review_required"
+                if task.status != "canceled":
+                    task.status = "review_required"
                 await self.session.execute(update(ComplianceReport).where(
                     ComplianceReport.task_id == copy_obj.task_id, ComplianceReport.tenant_id == tenant_id,
                     ComplianceReport.execution_id == task.execution_id, ComplianceReport.is_deleted == 0,

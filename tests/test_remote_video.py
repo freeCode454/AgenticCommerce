@@ -24,7 +24,7 @@ from app.clients.wan_video import (
 )
 from app.conf.config import settings
 from app.core.provider_context import ProviderBinding, ProviderSnapshot
-from app.core.task_execution import ExecutionContext, active_execution
+from app.core.task_execution import ExecutionContext, ExecutionSupersededError, active_execution
 from app.models import Asset, ProviderJob, TaskNodeRun
 from app.models.base import utc_now
 from app.services.remote_video import generate_durable_video
@@ -274,6 +274,38 @@ async def test_remote_id_and_ciphertext_are_committed_before_first_query(
     client = fake_video(monkeypatch, query=AsyncMock(side_effect=query))
     await submit_pending(remote_context, client)
     client.submit_video.assert_awaited_once()
+
+
+async def test_canceled_video_submission_keeps_late_receipt_without_polling(remote_context, monkeypatch):
+    from app.services.task_service import TaskService
+
+    ctx, identity, state = remote_context
+
+    async def post(**kwargs):
+        async with ctx.sessions() as session:
+            await TaskService(session).cancel_task(ctx.a, identity.task_id, identity.execution_id, "test-operator")
+        return {"task_id": "remote-late-receipt", "task_status": "PENDING"}
+
+    client = fake_video(monkeypatch, submit=AsyncMock(side_effect=post))
+    with pytest.raises(ExecutionSupersededError):
+        await generate_durable_video(
+            client,
+            prompt=state["generation_prompts"]["video_storyboard"],
+            duration=5,
+            aspect_ratio="16:9",
+            image_url=state["generated_images"][0]["url"],
+            round_number=0,
+        )
+    client.submit_video.assert_awaited_once()
+    client.query_video.assert_not_awaited()
+    task, attempt = await task_and_execution(ctx, identity.task_id)
+    assert task.status == attempt.status == "canceled" and attempt.next_poll_at is None
+    async with ctx.sessions() as session:
+        detail = await TaskService(session).get_task_detail(ctx.a, identity.task_id)
+        assert detail["remote_jobs"][0]["remote_id"] == "remote-late-receipt"
+        assert detail["remote_jobs"][0]["status"] == "submitted"
+    await worker(ctx).finish(identity, "completed")
+    assert (await task_and_execution(ctx, identity.task_id))[0].status == "canceled"
 
 
 async def test_unstarted_review_resumes_without_generating_copy_images_or_video(

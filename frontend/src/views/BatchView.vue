@@ -206,6 +206,10 @@ async function loadDetail(id: string) {
             <span>失败</span>
             <b>{{ detail.tasks.filter((task) => task.status === 'failed').length }}</b>
           </div>
+          <div>
+            <span>已取消</span>
+            <b>{{ detail.tasks.filter((task) => task.status === 'canceled').length }}</b>
+          </div>
         </div>
         <div v-for="task in detail.tasks" :key="task.id" class="file-row">
           <AppIcon name="layers" />

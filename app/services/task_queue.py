@@ -127,6 +127,8 @@ async def refresh_batch(
         batch.status = "pending"
     elif counts.get("review_required", 0):
         batch.status = "review_required"
+    elif counts.get("canceled", 0):
+        batch.status = "canceled" if counts["canceled"] == batch.total_count else "partial_canceled"
     elif batch.failed_count:
         batch.status = "failed"
     else:

@@ -7,6 +7,8 @@ const labels: Record<string, string> = {
   completed: '已完成',
   success: '已完成',
   failed: '执行失败',
+  canceled: '已取消',
+  partial_canceled: '部分任务已取消',
   pending: '待处理',
   review_required: '待重新审核',
   passed: '审核通过',

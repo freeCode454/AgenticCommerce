@@ -246,7 +246,7 @@ class WanxImageClient:
                     }
                 ]
             },
-            "parameters": {"prompt_extend": True}
+            "parameters": {"prompt_extend": True, "n": n, "size": size}
         }
 
         try:
@@ -261,8 +261,9 @@ class WanxImageClient:
                     for choice in choices:
                         content_list = choice.get("message", {}).get("content", [])
                         for item in content_list:
-                            if item.get("type") == "image":
-                                urls.append(item.get("image"))
+                            url = item.get("image") if isinstance(item, dict) else None
+                            if isinstance(url, str) and url.startswith("https://"):
+                                urls.append(url)
                     
                     if urls:
                         elapsed_ms = int((time.time() - start_time) * 1000)
@@ -270,7 +271,7 @@ class WanxImageClient:
                             "urls": urls,
                             "task_id": data.get("request_id", ""),
                             "elapsed_ms": elapsed_ms,
-                            "cost": 0.08 * n,
+                            "cost": 0.08 * len(urls),
                             "is_mock": 0,
                             "model": model,
                         }

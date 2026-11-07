@@ -147,6 +147,41 @@ def worker(ctx, runner=None, **kwargs):
     )
 
 
+async def test_canceled_queue_is_terminal_and_stale_cancel_cannot_stop_retry(queue_db):
+    ctx = queue_db
+    user_id = uuid4().hex
+    async with ctx.sessions() as session:
+        batch = await BatchService(session).create_batch(ctx.a, user_id, "Canceled batch", [ctx.sku_a])
+        task_id = batch["tasks"][0]["task_id"]
+    _, attempt = await task_and_execution(ctx, task_id)
+
+    async with ctx.sessions() as session:
+        with pytest.raises(LookupError):
+            await TaskService(session).cancel_task(ctx.b, task_id, attempt.id, user_id)
+    async with ctx.sessions() as session:
+        svc = TaskService(session)
+        canceled = await svc.cancel_task(ctx.a, task_id, attempt.id, user_id)
+        assert canceled["status"] == "canceled"
+        assert await svc.cancel_task(ctx.a, task_id, attempt.id, user_id) == canceled
+        detail = await BatchService(session).get_batch_detail(ctx.a, batch["batch_id"])
+        assert detail["batch"]["status"] == detail["tasks"][0]["status"] == "canceled"
+        assert detail["batch"]["failed_count"] == 0
+
+    task, saved = await task_and_execution(ctx, task_id)
+    assert task.updated_by == saved.updated_by == user_id
+    assert saved.status == "canceled" and saved.finished_at and saved.started_at is None
+    runner = AsyncMock()
+    assert not await worker(ctx, runner).run_one(ctx.a, task_id)
+    runner.assert_not_awaited()
+
+    async with ctx.sessions() as session:
+        await TaskService(session).retrigger_task(ctx.a, task_id)
+        with pytest.raises(TaskConflictError):
+            await TaskService(session).cancel_task(ctx.a, task_id, attempt.id, user_id)
+    task, replacement = await task_and_execution(ctx, task_id)
+    assert task.status == replacement.status == "pending" and replacement.id != attempt.id
+
+
 async def test_committed_queue_survives_worker_replacement(queue_db):
     ctx = queue_db
     created = await create(ctx)
@@ -513,6 +548,8 @@ async def test_task_and_batch_api_persist_without_running_background_models(queu
             assert batch.status_code == 200
             _, attempt = await task_and_execution(ctx, task_id)
             assert attempt.status == "pending" and attempt.started_at is None
+            stopped = await client.post(f"/api/v1/tasks/{task_id}/cancel", json={"execution_id": attempt.id})
+            assert stopped.status_code == 200 and stopped.json()["data"]["status"] == "canceled"
     finally:
         app.dependency_overrides.clear()
 

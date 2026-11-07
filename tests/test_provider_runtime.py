@@ -275,6 +275,26 @@ async def test_selected_model_and_key_are_used_in_actual_http_payload(
     )
 
 
+async def test_qwen_image_reads_native_image_items_and_sends_dimensions(monkeypatch):
+    import httpx
+    from app.clients import provider_factory as clients
+
+    expected = "https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/product.png"
+    fake = AsyncMock()
+    fake.__aenter__.return_value = fake
+    fake.post.return_value = httpx.Response(200, json={
+        "output": {"choices": [{"message": {"content": [{"image": expected}, {"text": "OK"}]}}]},
+        "usage": {"output_image_count": 1, "output_height": 1024, "output_width": 1024},
+    })
+    monkeypatch.setattr(clients.httpx, "AsyncClient", lambda **kwargs: fake)
+    image = clients.ProviderFactory.get_image_client()
+    image.api_key = "offline-wire-test"
+    result = await image.generate_images("Product photo", n=1, size="1024*1024")
+    assert result["is_mock"] == 0 and result["urls"] == [expected]
+    parameters = fake.post.call_args.kwargs["json"]["parameters"]
+    assert parameters["n"] == 1 and parameters["size"] == "1024*1024"
+
+
 async def test_snapshot_rejects_unexpected_cross_tenant_record(master):
     with pytest.raises(ProviderConfigurationError):
         async with provider_scope(

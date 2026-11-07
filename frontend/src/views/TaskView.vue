@@ -47,6 +47,7 @@ watch(status, () => {
         <option value="retrying">重新创作中</option>
         <option value="completed">已完成</option>
         <option value="failed">执行失败</option>
+        <option value="canceled">已取消</option>
         <option value="review_required">待重新审核</option>
       </select>
     </div>

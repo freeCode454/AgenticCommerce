@@ -13,7 +13,7 @@ from app.api.task_config import TaskConfig
 from app.services.delivery_content import (
     complete_media, current_media, latest_copy, latest_report, report_data, report_status,
 )
-from app.models.base import generate_uuid32
+from app.models.base import generate_uuid32, utc_now
 from app.models.batch import Batch
 from app.models.provider_job import ProviderJob
 from app.models.sku import Sku
@@ -27,8 +27,10 @@ from app.services.task_queue import (
     enqueue,
     refresh_batch,
 )
+from app.services.workflow_checkpoint import mark_unknown_submission
 
 logger = logging.getLogger("task_service")
+ACTIVE_TASK_STATES = {"pending", "running", "retrying"}
 
 
 class TaskService(BaseService):
@@ -200,7 +202,7 @@ class TaskService(BaseService):
             TaskExecution.task_id == task_id, TaskExecution.tenant_id == tenant_id,
             TaskExecution.status.in_(("pending", "running")), TaskExecution.is_deleted == 0,
         ))).first()
-        if task.status in {"pending", "running", "retrying"} or active:
+        if task.status in ACTIVE_TASK_STATES or active:
             raise TaskConflictError("任务已排队或正在执行，请勿重复触发")
         if task.status == "review_required":
             report = await latest_report(self.session, task)
@@ -215,3 +217,50 @@ class TaskService(BaseService):
         await refresh_batch(self.session, tenant_id, task.batch_id)
         await self.session.commit()
         return {"task_id": task_id, "sku_id": task.sku_id, "config": task.config or {}, "status": "pending"}
+
+    async def cancel_task(
+        self, tenant_id: str, task_id: str, execution_id: str | None, user_id: str,
+    ) -> dict:
+        """Stop this attempt and keep the local state of already submitted requests."""
+        task = (await self.session.execute(select(Task).where(
+            Task.id == task_id, Task.tenant_id == tenant_id, Task.is_deleted == 0,
+        ).with_for_update())).scalar_one_or_none()
+        if task is None:
+            raise LookupError("任务不存在")
+        if task.execution_id != execution_id:
+            raise TaskConflictError("任务已切换到新的执行，请刷新后再取消")
+        result = {"task_id": task_id, "execution_id": execution_id, "status": "canceled"}
+        if task.status == "canceled":
+            return result
+        if task.status not in ACTIVE_TASK_STATES:
+            raise TaskConflictError("只有排队中或执行中的任务可以取消")
+
+        execution = None
+        if execution_id is not None:
+            execution = (await self.session.execute(select(TaskExecution).where(
+                TaskExecution.id == execution_id, TaskExecution.task_id == task_id,
+                TaskExecution.tenant_id == tenant_id, TaskExecution.is_deleted == 0,
+            ).with_for_update())).scalar_one_or_none()
+            if execution is None or execution.status not in {"pending", "running"}:
+                raise TaskConflictError("执行状态已更新，请刷新后重试")
+
+        started = task.status != "pending" or bool(execution and execution.started_at)
+        message = (
+            "已停止本地后续步骤。已发出的模型请求可能继续执行或产生费用，请核对厂商账单。"
+            if started else "已从本地队列取消。"
+        )
+        task.status, task.error_message, task.updated_by = "canceled", message, user_id
+        if execution is not None:
+            execution.status, execution.finished_at = "canceled", utc_now()
+            execution.error_message, execution.updated_by = message, user_id
+            execution.next_poll_at = None
+            await mark_unknown_submission(self.session, tenant_id, task_id, execution.id)
+        latest_node = await self.session.scalar(select(TaskNodeRun).where(
+            TaskNodeRun.tenant_id == tenant_id, TaskNodeRun.task_id == task_id,
+            TaskNodeRun.execution_id == execution_id, TaskNodeRun.is_deleted == 0,
+        ).order_by(TaskNodeRun.create_time.desc(), TaskNodeRun.id.desc()).limit(1))
+        if latest_node is not None and latest_node.status == "running":
+            latest_node.status, latest_node.updated_by = "canceled", user_id
+        await refresh_batch(self.session, tenant_id, task.batch_id)
+        await self.session.commit()
+        return result

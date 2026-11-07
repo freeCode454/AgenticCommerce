@@ -24,6 +24,10 @@ class TaskCreateRequest(BaseModel):
     config: TaskConfig = Field(default_factory=TaskConfig)
 
 
+class TaskCancelRequest(BaseModel):
+    execution_id: str | None = Field(max_length=32, min_length=1)
+
+
 @router.get("")
 async def list_tasks(
     page: int = Query(1, ge=1),
@@ -107,3 +111,24 @@ async def trigger_task_run(
         raise HTTPException(status_code=404, detail=str(e))
 
     return {"code": 200, "data": {"task_id": result["task_id"], "status": result["status"]}, "message": "已加入执行队列"}
+
+
+@router.post("/{task_id}/cancel")
+async def cancel_task(
+    task_id: str,
+    req: TaskCancelRequest,
+    db: AsyncSession = Depends(get_db),
+    user_tenant: dict = Depends(get_current_user_and_tenant),
+) -> dict:
+    from app.services.task_worker import TaskWorker
+
+    try:
+        result = await TaskService(db).cancel_task(
+            user_tenant["tenant_id"], task_id, req.execution_id, user_tenant["user_id"],
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from None
+    except TaskConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
+    await TaskWorker.broadcast(user_tenant["tenant_id"], task_id)
+    return {"code": 200, "data": result, "message": "任务已取消"}
