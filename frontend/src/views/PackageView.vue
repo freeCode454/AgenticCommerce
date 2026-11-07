@@ -10,11 +10,14 @@ import PageState from '@/components/ui/PageState.vue'
 import PaginationBar from '@/components/ui/PaginationBar.vue'
 import AppDialog from '@/components/ui/AppDialog.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
+import ArchiveDownload from '@/components/ui/ArchiveDownload.vue'
+import { archivePath } from '@/utils/archive'
 const ui = useUiStore(),
   list = useCollection<PackageItem>('/packages', 10),
   open = ref(false),
   loading = ref(false),
   failure = ref(''),
+  downloadFailure = ref(''),
   manifest = ref<DeliveryManifest | null>(null),
   selected = ref('')
 let sequence = 0
@@ -25,6 +28,7 @@ async function view(id: string) {
   loading.value = true
   manifest.value = null
   failure.value = ''
+  downloadFailure.value = ''
   try {
     const { data } = await client.post<ApiResponse<DeliveryManifest>>('/packages/export', {
       task_id: id,
@@ -42,16 +46,11 @@ async function view(id: string) {
     title="交付中心"
     description="汇集已完成任务，核对文案、媒体与审核结果。"
     eyebrow="READY FOR DELIVERY"
-  >
-    <button class="btn btn-secondary" disabled>
-      <AppIcon name="download" :size="17" />
-      ZIP 下载尚未开放
-    </button>
-  </PageHeading>
+  />
   <div class="notice mb-5">
     <AppIcon name="info" :size="18" />
     <span>
-      清单只包含通过最新审核、具备真实素材的任务。当前可查看交付清单与原文件，ZIP 归档下载尚未开放。
+      通过最新审核且归档完整的任务，可在交付清单中下载 ZIP。
     </span>
   </div>
   <PageState
@@ -140,8 +139,16 @@ async function view(id: string) {
           <span>
             {{ asset.type === 'video' ? '视频' : '图片' }} · {{ asset.sub_type || '媒体素材' }}
           </span>
+          <ArchiveDownload
+            v-if="archivePath(asset.url)"
+            :url="asset.url"
+            class="text-button"
+            @error="downloadFailure = $event"
+          >
+            下载文件
+          </ArchiveDownload>
           <a
-            v-if="safeUrl(asset.url)"
+            v-else-if="safeUrl(asset.url)"
             class="text-button"
             :href="safeUrl(asset.url)"
             target="_blank"
@@ -152,15 +159,23 @@ async function view(id: string) {
           </a>
           <span v-else class="text-muted">地址不可用</span>
         </div>
-        <p class="notice mt-5">ZIP 归档下载尚未开放。</p>
+        <div v-if="!manifest.download_archive_url" class="notice mt-5">
+          <span>{{ manifest.download_block_reason || '当前清单没有可下载的 ZIP。' }}</span>
+          <button class="text-button" @click="view(selected)">刷新清单</button>
+        </div>
       </template>
     </PageState>
     <template #footer>
+      <span v-if="downloadFailure" class="notice notice-danger" role="alert">{{ downloadFailure }}</span>
       <button class="btn btn-secondary" @click="open = false">关闭</button>
-      <button class="btn btn-primary" disabled>
-        <AppIcon name="download" :size="16" />
-        下载 ZIP · 尚未开放
-      </button>
+      <ArchiveDownload
+        :url="manifest?.download_archive_url"
+        kind="package"
+        class="btn btn-primary"
+        @error="downloadFailure = $event"
+      >
+        下载 ZIP
+      </ArchiveDownload>
     </template>
   </AppDialog>
 </template>

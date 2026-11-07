@@ -241,7 +241,7 @@ test('文案安全文本渲染、编辑保存后提示重新审核', async ({ pa
   expect(h.writes[0].body.bullets).toEqual(copy.bullets)
 })
 
-test('真实零值、费用分布隐藏、刊登与 ZIP 入口禁用', async ({ page }) => {
+test('真实零值、费用分布隐藏、平台刊登入口禁用', async ({ page }) => {
   const h = await setup(page, { mode: 'empty' })
   await page.goto('/dashboard')
   await ready(page)
@@ -253,7 +253,7 @@ test('真实零值、费用分布隐藏、刊登与 ZIP 入口禁用', async ({ 
   await expect(page.getByText('DO NOT RENDER')).toHaveCount(0)
   await page.goto('/packages')
   await ready(page)
-  await expect(page.getByRole('button', { name: 'ZIP 下载尚未开放' })).toBeDisabled()
+  await expect(page.getByText('通过最新审核且归档完整的任务，可在交付清单中下载 ZIP。')).toBeVisible()
   await page.goto('/listings')
   await ready(page)
   await expect(page.getByRole('button', { name: '发布到平台 · 尚未开放' })).toBeDisabled()
@@ -488,6 +488,7 @@ test('交付清单展示接口返回内容，独立审核不自动调用模型',
           media_assets: [{ type: 'image', url: 'javascript:alert(1)' }],
           quality_audit: { score: 92, passed: 1, suggestions: [] },
           download_archive_url: null,
+          download_block_reason: '媒体正在归档，稍后刷新清单即可下载。',
         },
         message: 'manifest',
       },
@@ -500,13 +501,58 @@ test('交付清单展示接口返回内容，独立审核不自动调用模型',
   const dialog = page.getByRole('dialog', { name: '交付清单' })
   await expect(dialog.getByRole('heading', { name: copy.title })).toBeVisible()
   await expect(dialog.getByRole('link', { name: '打开文件' })).toHaveCount(0)
-  await expect(dialog.getByRole('button', { name: '下载 ZIP · 尚未开放' })).toBeDisabled()
+  await expect(dialog.getByText('媒体正在归档，稍后刷新清单即可下载。')).toBeVisible()
+  await expect(dialog.getByRole('button', { name: '下载 ZIP' })).toBeDisabled()
   await page.keyboard.press('Escape')
   await page.goto('/compliance')
   await ready(page)
   await page.getByRole('button', { name: '检查一段文案' }).click()
   await expect(page.getByRole('dialog', { name: '检查文案' })).toContainText('可能产生费用')
   expect(h.writes.map((r) => r.path)).toEqual(['/packages/export'])
+})
+
+test('交付 ZIP 使用当前身份下载并显示接口错误', async ({ page }) => {
+  const h = await setup(page)
+  let attempts = 0
+  const path = `/packages/${task.id}/download`
+  h.handler = async (route, requestPath) => {
+    if (requestPath === '/packages/export') {
+      await route.fulfill({
+        json: {
+          code: 200,
+          data: {
+            task_id: task.id,
+            sku_id: task.sku_id,
+            copywriting: copy,
+            media_assets: [],
+            quality_audit: { score: 92, passed: 1, suggestions: [] },
+            download_archive_url: '/api/v1' + path,
+          },
+        },
+      })
+      return true
+    }
+    if (requestPath !== path) return false
+    expect(route.request().headers().authorization).toBe('Bearer qa-session')
+    attempts++
+    await route.fulfill(attempts === 1
+      ? { status: 409, json: { detail: '请重新审核' } }
+      : {
+          contentType: 'application/zip',
+          headers: { 'Content-Disposition': 'attachment; filename="delivery.zip"' },
+          body: Buffer.from('504b0506000000000000000000000000000000000000', 'hex'),
+        })
+    return true
+  }
+  await page.goto('/packages')
+  await ready(page)
+  await page.getByRole('button', { name: '查看交付清单' }).click()
+  const button = page.getByRole('button', { name: '下载 ZIP' })
+  await button.click()
+  await expect(page.getByRole('dialog').getByRole('alert')).toHaveText('请重新审核')
+  const downloadEvent = page.waitForEvent('download')
+  await button.click()
+  expect((await downloadEvent).suggestedFilename()).toBe('delivery.zip')
 })
 
 test('工作台自动重连达到上限后停止，可手动恢复', async ({ page }) => {

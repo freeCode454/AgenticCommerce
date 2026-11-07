@@ -9,11 +9,15 @@ import PaginationBar from '@/components/ui/PaginationBar.vue'
 import MediaPreview from '@/components/ui/MediaPreview.vue'
 import AppDialog from '@/components/ui/AppDialog.vue'
 import AppIcon from '@/components/ui/AppIcon.vue'
+import ArchiveDownload from '@/components/ui/ArchiveDownload.vue'
+import { archivePath } from '@/utils/archive'
 const list = useCollection<Asset>('/assets', 12, { type: '', sub_type: '' }),
   selected = ref<Asset | null>(null),
+  downloadFailure = ref(''),
   open = ref(false)
 function view(asset: Asset) {
   selected.value = asset
+  downloadFailure.value = ''
   open.value = true
 }
 function kind(asset: Asset) {
@@ -141,8 +145,13 @@ function kind(asset: Asset) {
       <p v-if="selected.is_mock" class="notice notice-warning mt-4">
         这是一条后端标记的示例素材，请核实后再用于交付。
       </p>
+      <p v-if="selected.archive_status === 'pending'" class="notice mt-4">正在归档素材。</p>
+      <p v-if="selected.archive_error" class="notice notice-warning mt-4">
+        {{ selected.archive_error }}{{ selected.archive_status === 'retrying' ? '，系统会自动重试。' : '。' }}
+      </p>
     </template>
     <template #footer>
+      <span v-if="downloadFailure" class="notice notice-danger" role="alert">{{ downloadFailure }}</span>
       <RouterLink
         v-if="selected?.task_id"
         class="btn btn-secondary"
@@ -151,8 +160,16 @@ function kind(asset: Asset) {
       >
         查看任务
       </RouterLink>
+      <ArchiveDownload
+        v-if="archivePath(selected?.url)"
+        :url="selected?.url"
+        class="btn btn-primary"
+        @error="downloadFailure = $event"
+      >
+        下载原文件
+      </ArchiveDownload>
       <a
-        v-if="safeUrl(selected?.url)"
+        v-else-if="safeUrl(selected?.url)"
         class="btn btn-primary"
         :href="safeUrl(selected?.url)"
         target="_blank"

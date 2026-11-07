@@ -6,14 +6,21 @@ from minio import Minio
 from app.conf.config import settings
 import urllib3
 
-minio_client = Minio(
-    settings.MINIO_ENDPOINT,
-    access_key=settings.MINIO_ACCESS_KEY,
-    secret_key=settings.MINIO_SECRET_KEY,
-    secure=settings.MINIO_SECURE,
-    http_client=urllib3.PoolManager(timeout=urllib3.Timeout(connect=2, read=2), retries=False),
-)
+def create_minio_client(read_timeout: float) -> Minio:
+    return Minio(
+        settings.MINIO_ENDPOINT,
+        access_key=settings.MINIO_ACCESS_KEY,
+        secret_key=settings.MINIO_SECRET_KEY,
+        secure=settings.MINIO_SECURE,
+        http_client=urllib3.PoolManager(
+            timeout=urllib3.Timeout(connect=2, read=read_timeout), retries=False,
+        ),
+    )
 
-def ensure_bucket_exists(bucket_name: str = settings.MINIO_BUCKET):
-    if not minio_client.bucket_exists(bucket_name):
-        minio_client.make_bucket(bucket_name)
+
+minio_client = create_minio_client(2)
+
+
+def ensure_bucket_exists(bucket_name: str = settings.MINIO_BUCKET, *, client: Minio = minio_client) -> None:
+    if not client.bucket_exists(bucket_name):
+        client.make_bucket(bucket_name)

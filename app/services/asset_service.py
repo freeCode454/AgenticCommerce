@@ -42,7 +42,8 @@ class AssetService(BaseService):
                 "id": a.id, "task_id": a.task_id, "sku_id": a.sku_id,
                 "sku_name": sku_info[0] if sku_info else "",
                 "sku_code": sku_info[1] if sku_info else "",
-                "type": a.type, "sub_type": a.sub_type, "url": a.url,
+                "type": a.type, "sub_type": a.sub_type, "url": a.display_url,
+                "archive_status": a.archive_status, "archive_error": a.archive_error,
                 "meta": a.meta, "status": a.status, "is_mock": a.is_mock,
                 "create_time": a.create_time.isoformat() if a.create_time else None,
             })

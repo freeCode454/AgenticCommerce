@@ -6,8 +6,10 @@
 import logging
 from typing import Any, Dict, Optional
 
+from pydantic import ValidationError
 from sqlalchemy import select
 
+from app.api.task_config import TaskConfig
 from app.models.asset import Asset
 from app.models.base import generate_uuid32
 from app.models.batch import Batch
@@ -141,7 +143,11 @@ class TaskService(BaseService):
                 "expires_at": job.expires_at.isoformat(),
             } for job in jobs],
             "assets": [
-                {"id": a.id, "type": a.type, "sub_type": a.sub_type, "url": a.url, "is_mock": a.is_mock, "meta": a.meta}
+                {
+                    "id": a.id, "type": a.type, "sub_type": a.sub_type, "url": a.display_url,
+                    "is_mock": a.is_mock, "meta": a.meta,
+                    "archive_status": a.archive_status, "archive_error": a.archive_error,
+                }
                 for a in assets
             ],
             "compliance_report": {
@@ -200,6 +206,10 @@ class TaskService(BaseService):
         if task.status in {"pending", "running", "retrying"} or active:
             raise TaskConflictError("任务已排队或正在执行，请勿重复触发")
 
+        try:
+            TaskConfig.model_validate(task.config or {})
+        except ValidationError as error:
+            raise TaskConflictError("旧任务的生成配置不再支持，请新建英文 Amazon 完整生成任务。") from error
         enqueue(self.session, task, request_key=request_key)
         await refresh_batch(self.session, tenant_id, task.batch_id)
         await self.session.commit()

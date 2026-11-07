@@ -12,6 +12,7 @@ from typing import Any
 
 from sqlalchemy import and_, case, func, or_, select, text
 
+from app.api.task_config import TaskConfig
 from app.clients.postgres import AsyncSessionLocal, engine
 from app.clients.wan_video import RemoteVideoPending, SubmissionUnknownError
 from app.conf.config import settings
@@ -51,6 +52,7 @@ async def execute_workflow(
             raise ValueError("Recovery state does not belong to this task")
         return await app_workflow.ainvoke(resume_state)
 
+    config = TaskConfig.model_validate(config).model_dump()
     async with AsyncSessionLocal() as session:
         sku = (
             await session.execute(

@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi.responses import JSONResponse
 from app.conf.config import settings
@@ -23,14 +24,20 @@ from fastapi.exceptions import RequestValidationError
 # 预留生命周期管理
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.services.media_archive import archive_loop
     from app.services.task_worker import TaskWorker
     worker = TaskWorker()
+    archive = None
     app.state.task_worker = worker
     try:
         if settings.TASK_WORKER_ENABLED:
             await worker.start()
+            archive = asyncio.create_task(archive_loop(), name="media-archive")
         yield
     finally:
+        if archive is not None:
+            archive.cancel()
+            await asyncio.gather(archive, return_exceptions=True)
         await worker.stop()
         await redis_client.aclose()
         await engine.dispose()

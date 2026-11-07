@@ -140,6 +140,119 @@ async def test_completed_task_without_review_cannot_export(context):
     assert response.status_code == 409
 
 
+async def test_unimplemented_listing_is_not_written_and_legacy_record_is_local(context):
+    from app.models.listing import Listing
+
+    client, session = context["client"], context["session"]
+    response = await client.post("/api/v1/listings", json={
+        "sku_id": context["sku_a"], "platform": "amazon", "listing_data": {},
+    })
+    assert response.status_code == 501
+    assert (await client.get("/api/v1/listings")).json()["data"]["total"] == 0
+
+    session.add(Listing(
+        tenant_id=context["tenant_a"], sku_id=context["sku_b"], platform="amazon",
+        status="published", listing_data={"external_product_id": "EXT_legacy", "title": "Old listing"},
+    ))
+    await session.flush()
+    [record] = (await client.get("/api/v1/listings")).json()["data"]["items"]
+    assert record["status"] == "local_record"
+    assert record["sku_name"] == record["sku_code"] == ""
+    assert record["listing_data"] == {"title": "Old listing"}
+
+
+@pytest.mark.parametrize("config", [{"platform": "shopify"}, {"language": "zh"}, {"media_type": "image"}])
+async def test_task_rejects_unsupported_generation_config(context, config):
+    response = await context["client"].post("/api/v1/tasks", json={"sku_id": context["sku_a"], "config": config})
+    assert response.status_code == 422
+
+
+async def test_zip_requires_current_review_and_archived_round(context, monkeypatch):
+    from io import BytesIO
+    import json
+    from zipfile import ZipFile
+
+    from app.api.v1 import assets as asset_api, packages
+    from app.models.asset import Asset
+
+    client, session = context["client"], context["session"]
+    task_id, tenant_id = context["task"], context["tenant_a"]
+    task = await session.get(Task, task_id)
+    task.execution_id = uuid.uuid4().hex
+    task.retry_count = 1
+    common = {"tenant_id": tenant_id, "sku_id": context["sku_a"], "task_id": task_id,
+              "execution_id": task.execution_id}
+    copy = Copy(**common, title="Approved copy")
+    review = ComplianceReport(**common, score=98, passed=1, status="passed")
+    assets = [
+        Asset(**common, type=kind, sub_type=subtype, generation_round=1, status="completed",
+              url="https://expired.example.test/file")
+        for kind, subtype in packages.DELIVERY_MEDIA
+    ]
+    previous = Asset(
+        **common, type="image", sub_type="main", generation_round=0, status="completed",
+        url="https://expired.example.test/old",
+    )
+    session.add_all([copy, review, previous, *assets])
+    await session.flush()
+
+    url = f"/api/v1/packages/{task_id}/download"
+    manifest = (await client.post("/api/v1/packages/export", json={"task_id": task_id})).json()["data"]
+    assert manifest["download_archive_url"] is None
+    assert "正在归档" in manifest["download_block_reason"]
+    assert (await client.get(url)).status_code == 409
+
+    stored = {}
+    for asset in assets:
+        asset.archive_key = asset.id
+        stored[asset.id] = f"fixture-{asset.sub_type}".encode()
+        asset.archive_size = len(stored[asset.id])
+        asset.archive_content_type = "image/png" if asset.type == "image" else "video/mp4"
+    await session.flush()
+
+    def read_object(key, size):
+        assert len(stored[key]) == size
+        yield stored[key]
+
+    monkeypatch.setattr(packages, "iter_object", read_object)
+    monkeypatch.setattr(asset_api, "iter_object", read_object)
+    manifest = (await client.post("/api/v1/packages/export", json={"task_id": task_id})).json()["data"]
+    assert manifest["download_archive_url"] == url
+    assert len(manifest["media_assets"]) == 4
+    response = await client.get(url)
+    assert response.status_code == 200 and response.headers["content-type"] == "application/zip"
+    with ZipFile(BytesIO(response.content)) as bundle:
+        assert set(bundle.namelist()) == {
+            "copy.json", "review.json", "image/main.png", "image/detail.png", "image/scene.png",
+            "video/product_showcase.mp4",
+        }
+        assert json.loads(bundle.read("copy.json"))["title"] == "Approved copy"
+        assert bundle.read("image/main.png") == b"fixture-main"
+        assert json.loads(bundle.read("review.json"))["passed"] == 1
+
+    media_url = manifest["media_assets"][0]["url"]
+    assert (await client.get(media_url)).status_code == 200
+    assert (await client.get(media_url, headers={"Authorization": ""})).status_code == 401
+    assets[0].tenant_id = context["tenant_b"]
+    await session.flush()
+    assert (await client.get(f"/api/v1/assets/{assets[0].id}/file")).status_code == 404
+    assets[0].tenant_id = tenant_id
+    await session.flush()
+
+    previous.is_deleted = 1
+    for asset in assets:
+        asset.generation_round = None
+    await session.flush()
+    assert (await client.get(url)).status_code == 409
+    for asset in assets:
+        asset.generation_round = 1
+    await session.flush()
+
+    response = await client.put(f"/api/v1/copies/{copy.id}", json={"title": "Pending new review"})
+    assert response.status_code == 200
+    assert (await client.get(url)).status_code == 409
+
+
 async def test_editing_copy_invalidates_previous_approval(context):
     copy = Copy(tenant_id=context["tenant_a"],task_id=context["task"],sku_id=context["sku_a"],title="Old")
     report = ComplianceReport(tenant_id=context["tenant_a"],task_id=context["task"],sku_id=context["sku_a"],score=99,passed=1,status="passed")

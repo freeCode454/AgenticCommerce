@@ -59,6 +59,8 @@ export interface Asset {
   url: string
   status?: string
   is_mock?: number
+  archive_status?: 'external' | 'pending' | 'retrying' | 'failed' | 'stored'
+  archive_error?: string | null
   meta?: Record<string, unknown>
   create_time?: string
 }
@@ -170,6 +172,7 @@ export interface DeliveryManifest {
   media_assets: { type: string; sub_type?: string; url: string }[]
   quality_audit: Pick<Report, 'score' | 'passed' | 'suggestions'>
   download_archive_url: string | null
+  download_block_reason?: string | null
 }
 export interface Listing {
   id: string

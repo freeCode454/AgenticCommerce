@@ -74,6 +74,7 @@ async def video_generator_node(state: AgentState) -> dict:
                 asset_obj = Asset(
                     provider_job_id=job_id,
                     execution_id=execution_id,
+                    generation_round=state.get("retry_count", 0),
                     tenant_id=tenant_id,
                     task_id=task_id,
                     sku_id=sku_id,

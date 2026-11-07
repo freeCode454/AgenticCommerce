@@ -70,6 +70,7 @@ async def image_generator_node(state: AgentState) -> dict:
                         execution_id = await fence_execution(session, tenant_id=tenant_id, task_id=task_id)
                         asset_obj = Asset(
                             execution_id=execution_id,
+                            generation_round=state.get("retry_count", 0),
                             tenant_id=tenant_id,
                             task_id=task_id,
                             sku_id=sku_id,
