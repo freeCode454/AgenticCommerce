@@ -1,6 +1,8 @@
 """Offline generation contract tests. No provider calls or business DB writes."""
 
 import json
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -8,6 +10,7 @@ import pytest
 from app.agent.nodes import (
     creative_planner,
     image_generator,
+    requirement_analyzer,
     video_generator,
     visual_designer,
 )
@@ -58,6 +61,38 @@ def response(data: dict, **extra) -> dict:
         "cost": 0.002,
         **extra,
     }
+
+
+@pytest.mark.parametrize("has_knowledge", [False, True])
+async def test_requirement_analysis_calls_embedding_only_for_searchable_knowledge(monkeypatch, has_knowledge):
+    client = Mock(embedding_model="offline-vector-model")
+    client.get_embedding = AsyncMock(return_value=[0.01] * 1024)
+    client.chat_completion = AsyncMock(return_value={"content": "Audience analysis"})
+    repo = Mock()
+    repo.has_searchable_chunks = AsyncMock(return_value=has_knowledge)
+    repo.search_vectors = AsyncMock(return_value=[SimpleNamespace(content="Verified brand guidance")])
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    monkeypatch.setattr(requirement_analyzer, "AsyncSessionLocal", session)
+    monkeypatch.setattr(requirement_analyzer, "KnowledgeRepository", lambda db: repo)
+    monkeypatch.setattr(requirement_analyzer.ProviderFactory, "get_llm_client", lambda *args: client)
+    monkeypatch.setattr(requirement_analyzer, "record_node_execution", AsyncMock())
+    result = await requirement_analyzer.requirement_analyzer_node({
+        "tenant_id": "tenant-a", "sku_data": {"name": "Ceramic mug", "category": "home"},
+    })
+    repo.has_searchable_chunks.assert_awaited_once_with("tenant-a", "offline-vector-model")
+    assert result["requirement_report"]["rag_source_count"] == int(has_knowledge)
+    client.chat_completion.assert_awaited_once()
+    if has_knowledge:
+        client.get_embedding.assert_awaited_once_with("home Ceramic mug")
+        assert repo.search_vectors.await_args.kwargs["tenant_id"] == "tenant-a"
+        assert "Verified brand guidance" in client.chat_completion.await_args.args[0][-1]["content"]
+    else:
+        client.get_embedding.assert_not_awaited()
+        repo.search_vectors.assert_not_awaited()
 
 
 @pytest.mark.parametrize("fenced", [False, True])

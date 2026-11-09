@@ -14,6 +14,7 @@ from sqlalchemy import and_, case, func, or_, select, text
 
 from app.api.task_config import TaskConfig
 from app.clients.postgres import AsyncSessionLocal, engine
+from app.clients.provider_factory import EmbeddingAccessError
 from app.clients.wan_video import RemoteVideoPending, SubmissionUnknownError
 from app.conf.config import settings
 from app.core.task_execution import ExecutionContext, ExecutionSupersededError, active_execution
@@ -499,10 +500,14 @@ class TaskWorker:
                     type(error).__name__,
                 )
                 if context:
+                    message = (
+                        str(error) if isinstance(error, EmbeddingAccessError)
+                        else f"工作流执行失败 ({type(error).__name__})，请检查本次节点记录和模型配置。"
+                    )
                     await self.finish(
                         context,
                         "failed",
-                        f"工作流执行失败 ({type(error).__name__})，请检查本次节点记录和模型配置。",
+                        message,
                     )
                 return False
             finally:

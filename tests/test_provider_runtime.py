@@ -295,6 +295,25 @@ async def test_qwen_image_reads_native_image_items_and_sends_dimensions(monkeypa
     assert parameters["n"] == 1 and parameters["size"] == "1024*1024"
 
 
+async def test_embedding_denial_reports_permission_without_provider_body(monkeypatch):
+    import httpx
+    from app.clients import provider_factory as clients
+
+    fake = AsyncMock()
+    fake.__aenter__.return_value = fake
+    fake.post.return_value = httpx.Response(403, json={
+        "code": "Model.AccessDenied", "message": "raw-provider-diagnostic",
+    })
+    monkeypatch.setattr(clients.httpx, "AsyncClient", lambda **kwargs: fake)
+    monkeypatch.setattr(settings, "ALLOW_MOCK_ASSETS", False)
+
+    with pytest.raises(clients.EmbeddingAccessError) as error:
+        await clients.QwenLLMClient(api_key="offline-secret").get_embedding("test")
+    message = str(error.value)
+    assert "HTTP 403" in message and "调用权限" in message
+    assert "raw-provider-diagnostic" not in message and "offline-secret" not in message
+
+
 async def test_snapshot_rejects_unexpected_cross_tenant_record(master):
     with pytest.raises(ProviderConfigurationError):
         async with provider_scope(

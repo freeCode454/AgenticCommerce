@@ -26,6 +26,25 @@ class ProviderCallError(RuntimeError):
     """Sanitized provider failure; never include request credentials or response bodies."""
 
 
+class EmbeddingAccessError(ProviderCallError):
+    """A rejected embedding request with a safe diagnostic for the workspace."""
+
+    def __init__(self, response: httpx.Response) -> None:
+        try:
+            payload = response.json()
+            code = payload.get("code") if isinstance(payload, dict) else None
+        except ValueError:
+            code = None
+        hints = {
+            "Model.AccessDenied": "请在百炼为当前业务空间和 API Key 授予该向量模型的调用权限。",
+            "AccessDenied.Unpurchased": "请确认百炼服务与该向量模型已开通。",
+            "AllocationQuota.FreeTierOnly": "请检查该模型的免费额度和用完即停设置。",
+        }
+        default = "请核对 API Key 的地域、向量模型权限及账户额度。"
+        hint = hints.get(code, default) if isinstance(code, str) else default
+        super().__init__(f"百炼向量模型访问被拒绝（HTTP {response.status_code}）。{hint}")
+
+
 def ensure_mock_allowed() -> None:
     if settings.is_production or not settings.ALLOW_MOCK_ASSETS:
         raise ProviderCallError("模型调用失败或未配置凭据；当前环境禁止模拟回退")
@@ -132,6 +151,10 @@ class QwenLLMClient:
                     return vector
                 else:
                     logger.warning("Embedding API failed (HTTP %s)", resp.status_code)
+                    if resp.status_code in (401, 403) and (settings.is_production or not settings.ALLOW_MOCK_ASSETS):
+                        raise EmbeddingAccessError(resp)
+        except EmbeddingAccessError:
+            raise
         except Exception as e:
             logger.warning("Embedding API failed (%s)", type(e).__name__)
         ensure_mock_allowed()

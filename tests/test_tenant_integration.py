@@ -568,6 +568,8 @@ async def test_embedding_model_change_does_not_mix_old_and_new_vectors(provider_
     from app.repositories.knowledge_repo import KnowledgeRepository
     from app.services.knowledge_service import KnowledgeService
     ctx=provider_context
+    repo=KnowledgeRepository(ctx['session'])
+    assert not await repo.has_searchable_chunks(ctx['tenant_a'], 'text-embedding-v4')
     doc=KnowledgeBaseDoc(id=uuid.uuid4().hex,tenant_id=ctx['tenant_a'],category='brand',doc_type='brand',name='Offline vectors',vector_status='indexed')
     ctx['session'].add(doc);await ctx['session'].flush()
     for model in [None,'text-embedding-v4','offline-embedding']:
@@ -577,6 +579,8 @@ async def test_embedding_model_change_does_not_mix_old_and_new_vectors(provider_
     monkeypatch.setattr(QwenLLMClient,'get_embedding',fake)
     matches=await KnowledgeService(ctx['session']).vector_search(ctx['tenant_a'],'facts',10)
     assert [item['content'] for item in matches]==['offline-embedding']
-    repo=KnowledgeRepository(ctx['session'])
+    assert await repo.has_searchable_chunks(ctx['tenant_a'], 'text-embedding-v4')
+    assert not await repo.has_searchable_chunks(ctx['tenant_b'], 'text-embedding-v4')
+    assert not await repo.has_searchable_chunks(ctx['tenant_a'], 'unused-model')
     matches=await repo.search_vectors(ctx['tenant_a'],[0.01]*1024,limit=10,embedding_model='text-embedding-v4')
     assert {item.content for item in matches}=={'legacy-v4','text-embedding-v4'}
