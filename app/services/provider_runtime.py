@@ -13,6 +13,7 @@ from app.conf.config import settings
 from app.core.provider_context import (
     ProviderBinding,
     ProviderKind,
+    ProviderServiceName,
     ProviderSnapshot,
     active_providers,
 )
@@ -32,11 +33,12 @@ class ModelConfig(BaseModel):
         min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
     )
     credential_source: Literal["environment", "stored"]
+    service: ProviderServiceName = "dashscope"
     embedding_model: str | None = Field(
         default=None,
         min_length=1,
         max_length=128,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]*$",
     )
 
 
@@ -49,11 +51,13 @@ def model_config(kind: str, value: dict[str, Any]) -> dict[str, Any]:
             raise ValueError()
     except (ValidationError, ValueError):
         raise ProviderConfigurationError(
-            "模型参数无效；仅支持 model、credential_source，以及语言模型的 embedding_model。"
+            "模型参数无效，请核对服务商、模型 ID 和凭据来源。"
         ) from None
+    if parsed.service == "siliconflow" and (kind != "llm" or parsed.credential_source != "stored"):
+        raise ProviderConfigurationError("硅基流动当前支持语言与向量模型，请使用工作空间 API Key。")
     result = parsed.model_dump(exclude_none=True)
     if kind == "llm":
-        result.setdefault("embedding_model", "text-embedding-v4")
+        result.setdefault("embedding_model", "BAAI/bge-m3" if parsed.service == "siliconflow" else "text-embedding-v4")
     return result
 
 
@@ -91,6 +95,7 @@ def resolve_binding(provider: Provider) -> ProviderBinding:
         config["model"],
         key,
         config.get("embedding_model", "text-embedding-v4"),
+        service=config["service"],
     )
 
 

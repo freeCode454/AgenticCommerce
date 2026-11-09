@@ -276,6 +276,20 @@ async def test_remote_id_and_ciphertext_are_committed_before_first_query(
     client.submit_video.assert_awaited_once()
 
 
+async def test_frozen_review_preserves_siliconflow_service(remote_context):
+    from app.services.workflow_checkpoint import frozen_provider_scope
+
+    ctx, _, _ = remote_context
+    await save_provider_snapshot(ProviderSnapshot(ctx.a, (
+        ("llm", ProviderBinding("offline-provider", "Qwen/Qwen3.5-4B", "offline-siliconflow-key",
+                                "BAAI/bge-m3", service="siliconflow")),
+    )))
+    async with frozen_provider_scope("llm"):
+        client = ProviderFactory.get_llm_client()
+        assert client.service == "siliconflow" and client.embedding_model == "BAAI/bge-m3"
+        assert client.api_key == "offline-siliconflow-key"
+
+
 async def test_canceled_video_submission_keeps_late_receipt_without_polling(remote_context, monkeypatch):
     from app.services.task_service import TaskService
 

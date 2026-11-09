@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import client from '@/api/client'
 import { useResource } from '@/composables/useResource'
 import { useUserStore } from '@/stores/user'
@@ -23,6 +23,8 @@ const open = ref(false),
   testing = ref(''),
   testResults = reactive<Record<string, string>>({})
 const form = reactive({
+  type: 'llm',
+  service: 'siliconflow',
   name: '',
   key: '',
   model: '',
@@ -31,6 +33,7 @@ const form = reactive({
   replaceKey: false,
   isDefault: false,
 })
+const adding = computed(() => selected.value === null)
 const defaults: Record<string, string> = {
     llm: 'qwen-plus',
     image: 'qwen-image-3.0-pro',
@@ -56,10 +59,27 @@ watch(
   },
   { immediate: true },
 )
+function setNewModelDefaults() {
+  if (form.type !== 'llm') form.service = 'dashscope'
+  const siliconflow = form.service === 'siliconflow'
+  form.model = siliconflow ? 'Qwen/Qwen3.5-4B' : defaults[form.type]
+  form.embedding_model = siliconflow ? 'BAAI/bge-m3' : 'text-embedding-v4'
+  form.source = siliconflow ? 'stored' : 'environment'
+  form.key = ''
+}
+function startAdd() {
+  selected.value = null
+  Object.assign(form, { type: 'llm', service: 'siliconflow', name: '', isDefault: false, replaceKey: false })
+  setNewModelDefaults()
+  failure.value = ''
+  open.value = true
+}
 function start(provider: Provider) {
   selected.value = provider
   const config = provider.effective_config || provider.config || {}
   Object.assign(form, {
+    type: provider.type,
+    service: String(config.service || 'dashscope'),
     name: provider.name,
     key: '',
     model: String(config.model || defaults[provider.type] || ''),
@@ -81,21 +101,33 @@ watch(open, (value) => {
   }
 })
 async function save() {
-  if (busy.value || !selected.value) return
+  if (busy.value || user.userInfo?.role !== 'admin') return
   busy.value = true
   failure.value = ''
   try {
-    await client.put(`/providers/${selected.value.id}`, {
+    const config = {
       name: form.name.trim(),
       config: {
+        ...(adding.value ? { service: form.service } : {}),
         model: form.model.trim(),
         credential_source: form.source,
-        ...(selected.value.type === 'llm' ? { embedding_model: form.embedding_model.trim() } : {}),
+        ...(form.type === 'llm' ? { embedding_model: form.embedding_model.trim() } : {}),
       },
       is_default: form.isDefault ? 1 : 0,
-      ...(form.replaceKey ? { api_key: form.key.trim() } : {}),
-    })
-    delete testResults[selected.value.id]
+    }
+    if (selected.value) {
+      await client.put(`/providers/${selected.value.id}`, {
+        ...config,
+        ...(form.replaceKey ? { api_key: form.key.trim() } : {}),
+      })
+      delete testResults[selected.value.id]
+    } else {
+      await client.post('/providers', {
+        ...config,
+        type: form.type,
+        ...(form.source === 'stored' ? { api_key: form.key.trim() } : {}),
+      })
+    }
     const applied = form.isDefault
     open.value = false
     ui.notify(
@@ -115,10 +147,13 @@ function refreshConfigurations() {
 }
 async function test(provider: Provider) {
   if (testing.value) return
+  const siliconflow = (provider.effective_config || provider.config)?.service === 'siliconflow'
   if (
     !(await ui.confirm(
       '测试所选配置',
-      '将使用这条已保存配置的模型与凭据调用服务，可能产生费用。未保存的编辑不会用于测试。',
+      siliconflow
+        ? '将用已保存的配置发送一条短文本和一条向量请求，可能产生费用。'
+        : '将使用这条已保存配置的模型与凭据调用服务，可能产生费用。',
       '开始模型测试',
     ))
   )
@@ -127,12 +162,19 @@ async function test(provider: Provider) {
   delete testResults[provider.id]
   try {
     const { data } = await client.post<
-      ApiResponse<{ status: string; mode?: string; latency_ms?: number | null; model?: string }>
-    >(`/providers/${provider.id}/test`)
+      ApiResponse<{
+        status: string
+        mode?: string
+        latency_ms?: number | null
+        model?: string
+        embedding_model?: string
+        embedding_dimensions?: number
+      }>
+    >(`/providers/${provider.id}/test`, undefined, { timeout: 100_000 })
     const result = data.data
     testResults[provider.id] =
       result.status === 'success'
-        ? `${result.mode === 'Mock' ? '配置测试返回 · 模拟模式（未验证真实服务）' : '配置测试通过 · 真实 API'}${result.model ? ` · ${result.model}` : ''}${result.latency_ms != null ? ` · ${result.latency_ms} ms` : ''}`
+        ? `${result.mode === 'Mock' ? '配置测试返回 · 模拟模式（未验证真实服务）' : '配置测试通过 · 真实 API'}${result.model ? ` · ${result.model}` : ''}${result.latency_ms != null ? ` · ${result.latency_ms} ms` : ''}${result.embedding_dimensions ? ` · ${result.embedding_model} · ${result.embedding_dimensions} 维` : ''}`
         : '测试未通过，请检查此配置'
   } catch (e) {
     testResults[provider.id] = `测试失败：${errorMessage(e)}`
@@ -155,6 +197,15 @@ async function test(provider: Provider) {
       <AppIcon name="refresh" :size="16" />
       刷新配置
     </button>
+    <button
+      v-if="user.userInfo?.role === 'admin'"
+      class="btn btn-primary"
+      :disabled="!!testing || busy"
+      @click="startAdd"
+    >
+      <AppIcon name="plus" :size="17" />
+      添加模型
+    </button>
   </PageHeading>
   <div class="notice mb-5">
     <AppIcon name="info" :size="19" />
@@ -168,7 +219,7 @@ async function test(provider: Provider) {
     :error-code="user.userInfo?.role !== 'admin' ? 403 : errorCode"
     :empty="!data?.items.length"
     title="尚无模型配置记录"
-    description="请先在服务端初始化当前工作空间的厂商配置。"
+    description="点击页面上方的「添加模型」，为当前工作空间保存第一条配置。"
     icon="spark"
     @retry="reload()"
   >
@@ -203,6 +254,10 @@ async function test(provider: Provider) {
           <div>
             <dt>配置模型</dt>
             <dd>{{ provider.effective_config?.model || provider.config?.model || '尚未指定' }}</dd>
+          </div>
+          <div v-if="provider.type === 'llm' && (provider.effective_config || provider.config)?.embedding_model">
+            <dt>向量模型</dt>
+            <dd>{{ (provider.effective_config || provider.config)?.embedding_model }}</dd>
           </div>
           <div>
             <dt>凭据来源</dt>
@@ -253,10 +308,30 @@ async function test(provider: Provider) {
       </article>
     </div>
   </PageState>
-  <AppDialog v-model="open" title="编辑模型配置" :busy="busy">
+  <AppDialog v-model="open" :title="adding ? '添加模型' : '编辑模型配置'" :busy="busy">
     <form id="provider-edit" class="form-stack" @submit.prevent="save">
       <p class="notice">API Key 加密保存且不回显。设为默认会影响后续新任务，备用配置可单独测试。</p>
       <p v-if="failure" class="notice notice-error" role="alert">{{ failure }}</p>
+      <template v-if="adding">
+        <div class="form-group">
+          <label for="provider-type">模型类型</label>
+          <select id="provider-type" v-model="form.type" class="form-select" :disabled="busy" @change="setNewModelDefaults">
+            <option value="llm">语言与向量</option>
+            <option value="image">图片生成</option>
+            <option value="video">视频生成</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="provider-service">服务商</label>
+          <select id="provider-service" v-model="form.service" class="form-select" :disabled="busy" @change="setNewModelDefaults">
+            <option value="dashscope">阿里云百炼</option>
+            <option v-if="form.type === 'llm'" value="siliconflow">硅基流动</option>
+          </select>
+        </div>
+      </template>
+      <p v-if="form.service === 'siliconflow'" class="field-hint">
+        硅基流动费用以服务商账单为准。项目当前记录文本调用返回的 Token 用量。
+      </p>
       <div class="form-group">
         <label for="provider-name">配置名称</label>
         <input
@@ -280,7 +355,7 @@ async function test(provider: Provider) {
         />
         <p class="field-hint">需使用当前适配器支持的模型；是否可调用以主动测试结果为准。</p>
       </div>
-      <div v-if="selected?.type === 'llm'" class="form-group">
+      <div v-if="form.type === 'llm'" class="form-group">
         <label for="provider-embedding">向量模型 ID</label>
         <input
           id="provider-embedding"
@@ -298,28 +373,29 @@ async function test(provider: Provider) {
       <div class="form-group">
         <label for="provider-source">凭据来源</label>
         <select id="provider-source" v-model="form.source" class="form-select" :disabled="busy">
-          <option value="environment">使用服务端默认凭据</option>
+          <option v-if="form.service !== 'siliconflow'" value="environment">使用服务端默认凭据</option>
           <option value="stored">使用当前工作空间的密钥</option>
         </select>
       </div>
       <p v-if="selected?.key_status === 'legacy'" class="notice notice-warning">
         这条旧格式密钥会在保存时加密，无需重新填写。旧配置需保存后才应用。
       </p>
-      <label class="checkbox-label">
+      <label v-if="!adding" class="checkbox-label">
         <input v-model="form.replaceKey" type="checkbox" :disabled="busy" />
         替换或清空工作空间 API Key
       </label>
-      <div v-if="form.replaceKey" class="form-group">
-        <label for="provider-key">新 API Key</label>
+      <div v-if="adding ? form.source === 'stored' : form.replaceKey" class="form-group">
+        <label for="provider-key">{{ adding ? 'API Key' : '新 API Key' }}</label>
         <input
           id="provider-key"
           v-model="form.key"
           class="form-input"
           type="password"
           autocomplete="new-password"
+          :required="adding"
           :disabled="busy"
         />
-        <p class="field-hint">
+        <p v-if="!adding" class="field-hint">
           留空并保存会清除密钥。如果选择工作空间凭据，清空后不会自动改用服务端密钥。
         </p>
       </div>
@@ -331,7 +407,7 @@ async function test(provider: Provider) {
     <template #footer>
       <button class="btn btn-secondary" :disabled="busy" @click="open = false">取消</button>
       <button type="submit" form="provider-edit" class="btn btn-primary" :disabled="busy">
-        {{ busy ? '保存中…' : '保存配置' }}
+        {{ busy ? '保存中…' : adding ? '添加模型' : '保存配置' }}
       </button>
     </template>
   </AppDialog>

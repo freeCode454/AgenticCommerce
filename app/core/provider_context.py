@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 ProviderKind = Literal["llm", "image", "video"]
+ProviderServiceName = Literal["dashscope", "siliconflow"]
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,7 @@ class ProviderBinding:
     api_key: str = field(repr=False)
     embedding_model: str = "text-embedding-v4"
     api_base: str | None = None
+    service: ProviderServiceName = "dashscope"
 
 
 @dataclass(frozen=True)

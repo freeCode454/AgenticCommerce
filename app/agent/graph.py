@@ -17,7 +17,7 @@ from app.agent.nodes.video_generator import video_generator_node
 from app.agent.nodes.visual_designer import visual_designer_node
 from app.agent.recorder import record_node_execution
 from app.agent.state import AgentState
-from app.clients.provider_factory import EmbeddingAccessError
+from app.clients.provider_factory import EmbeddingAccessError, SiliconFlowCallError
 from app.clients.wan_video import RemoteVideoPending
 from app.core.task_execution import ExecutionSupersededError, active_execution
 from app.services.workflow_checkpoint import checkpoint_node, frozen_provider_scope
@@ -69,7 +69,7 @@ def observed_node(name, function):
             from app.core.generation import GenerationOutputError
             await record_node_execution(
                 task_id=state["task_id"], tenant_id=state["tenant_id"], node_name=name,
-                status="failed", output_data={"error_message": str(error) if isinstance(error, (GenerationOutputError, EmbeddingAccessError))
+                status="failed", output_data={"error_message": str(error) if isinstance(error, (GenerationOutputError, EmbeddingAccessError, SiliconFlowCallError))
                                                else f"节点执行失败 ({type(error).__name__})，请检查配置后重试。"},
             )
             raise

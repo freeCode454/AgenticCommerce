@@ -364,6 +364,66 @@ async def provider_context(context, monkeypatch):
     return {**context,"default":rows[0],"standby":rows[1],"other":rows[2],"master":key}
 
 
+async def test_add_and_test_siliconflow_provider_without_changing_default(provider_context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.clients import provider_factory
+    from app.core.provider_keys import decrypt_api_key
+    from app.models.provider import Provider
+    from app.services.provider_runtime import provider_scope
+
+    ctx = provider_context
+    client, db = ctx["client"], ctx["session"]
+    secret = "offline-siliconflow-test-key"
+    payload = {
+        "name": "SiliconFlow test", "type": "llm", "api_key": secret, "is_default": 0,
+        "config": {"service": "siliconflow", "model": "Qwen/Qwen3.5-4B",
+                   "embedding_model": "BAAI/bge-m3", "credential_source": "stored"},
+    }
+    provider_http = AsyncMock()
+    provider_http.__aenter__.return_value = provider_http
+    monkeypatch.setattr(provider_factory.httpx, "AsyncClient", lambda **kwargs: provider_http)
+    operator = create_access_token({"user_id": ctx["operator"], "tenant_id": ctx["tenant_a"]})
+    assert (await client.post("/api/v1/providers", json=payload, headers={"Authorization": "Bearer " + operator})).status_code == 403
+    created = await client.post("/api/v1/providers", json=payload)
+    assert created.status_code == 200 and secret not in created.text
+    provider_id = created.json()["data"]["id"]
+    row = await db.get(Provider, provider_id)
+    assert row.tenant_id == ctx["tenant_a"] and row.created_by == ctx["admin"] and row.is_default == 0
+    assert decrypt_api_key(row.api_key_enc, row.tenant_id, row.id, ctx["master"]) == secret
+    assert (await client.post("/api/v1/providers", json=payload)).status_code == 409
+    provider_http.post.assert_not_awaited()
+    async with provider_scope(ctx["tenant_a"], db):
+        assert provider_factory.ProviderFactory.get_llm_client().service == "dashscope"
+
+    async def post(url, *, headers, json):
+        assert headers["Authorization"] == "Bearer " + secret
+        if url == "https://api.siliconflow.cn/v1/chat/completions":
+            assert json["model"] == "Qwen/Qwen3.5-4B" and json["enable_thinking"] is False
+            return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+        assert url == "https://api.siliconflow.cn/v1/embeddings"
+        assert json == {"model": "BAAI/bge-m3", "input": "A ceramic cup."}
+        return httpx.Response(200, json={"data": [{"embedding": [0.01] * 1024}]})
+
+    provider_http.post.side_effect = post
+    result = await client.post(f"/api/v1/providers/{provider_id}/test")
+    assert result.status_code == 200
+    assert result.json()["data"]["embedding_dimensions"] == 1024 and provider_http.post.await_count == 2
+    listing = await client.get("/api/v1/providers")
+    assert secret not in listing.text and row.api_key_enc not in listing.text
+
+    assert (await client.put(f"/api/v1/providers/{provider_id}", json={"is_default": 1})).status_code == 200
+    async with provider_scope(ctx["tenant_a"], db):
+        assert provider_factory.ProviderFactory.get_llm_client().service == "siliconflow"
+    async with provider_scope(ctx["tenant_b"], db):
+        assert provider_factory.ProviderFactory.get_llm_client().service == "dashscope"
+    switched = await client.put(f"/api/v1/providers/{provider_id}", json={
+        "config": {**payload["config"], "service": "dashscope"},
+    })
+    assert switched.status_code == 503
+    assert provider_http.post.await_count == 2
+
+
 async def test_provider_key_write_is_encrypted_and_api_never_returns_secrets(provider_context):
     from app.core.provider_keys import decrypt_api_key
     ctx=provider_context

@@ -9,6 +9,7 @@ AI 模型厂商工厂 (支持 LLM / 生图 / 生视频 厂商插件化切换与�
 
 import asyncio
 import logging
+import math
 import time
 from typing import Any, Dict, List, Optional
 
@@ -16,7 +17,7 @@ import httpx
 
 from app.clients.wan_video import VideoProviderError, WanVideoTransport
 from app.conf.config import settings
-from app.core.provider_context import active_providers
+from app.core.provider_context import ProviderServiceName, active_providers
 from app.core.task_execution import guard_model_request
 
 logger = logging.getLogger("provider_factory")
@@ -26,10 +27,14 @@ class ProviderCallError(RuntimeError):
     """Sanitized provider failure; never include request credentials or response bodies."""
 
 
+class SiliconFlowCallError(ProviderCallError):
+    """A SiliconFlow diagnostic safe to display in the task and model settings."""
+
+
 class EmbeddingAccessError(ProviderCallError):
     """A rejected embedding request with a safe diagnostic for the workspace."""
 
-    def __init__(self, response: httpx.Response) -> None:
+    def __init__(self, response: httpx.Response, service: ProviderServiceName = "dashscope") -> None:
         try:
             payload = response.json()
             code = payload.get("code") if isinstance(payload, dict) else None
@@ -41,8 +46,9 @@ class EmbeddingAccessError(ProviderCallError):
             "AllocationQuota.FreeTierOnly": "请检查该模型的免费额度和用完即停设置。",
         }
         default = "请核对 API Key 的地域、向量模型权限及账户额度。"
-        hint = hints.get(code, default) if isinstance(code, str) else default
-        super().__init__(f"百炼向量模型访问被拒绝（HTTP {response.status_code}）。{hint}")
+        hint = hints.get(code, default) if service == "dashscope" and isinstance(code, str) else default
+        label = "硅基流动" if service == "siliconflow" else "百炼"
+        super().__init__(f"{label}向量模型访问被拒绝（HTTP {response.status_code}）。{hint}")
 
 
 def ensure_mock_allowed() -> None:
@@ -53,13 +59,18 @@ def ensure_mock_allowed() -> None:
 # 1. 通义千问 (Qwen) LLM & Embedding 客户端
 # ──────────────────────────────────────────────────────────────────────────────
 class QwenLLMClient:
-    """通义千问官方兼容接口客户端 (OpenAI 协议兼容)"""
+    """OpenAI-compatible chat with provider-specific embedding requests."""
 
     BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     EMBEDDING_URL = "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
+    SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
 
-    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None, embedding_model: Optional[str] = None):
-        self.api_key = settings.DASHSCOPE_API_KEY if api_key is None else api_key
+    def __init__(
+        self, api_key: str | None = None, model: str | None = None, embedding_model: str | None = None,
+        *, service: ProviderServiceName = "dashscope",
+    ) -> None:
+        self.service = service
+        self.api_key = settings.DASHSCOPE_API_KEY if api_key is None and service == "dashscope" else api_key or ""
         self.model = model
         self.embedding_model = embedding_model
 
@@ -75,9 +86,11 @@ class QwenLLMClient:
         await guard_model_request()
         start_time = time.time()
         model = self.model or model
+        siliconflow = self.service == "siliconflow"
 
         if not self.api_key or self.api_key.strip() == "":
-            logger.info("未检测到 DASHSCOPE_API_KEY，切换至 Qwen 高保真 Mock 响应模式")
+            if siliconflow:
+                raise SiliconFlowCallError("请配置硅基流动 API Key。")
             return self._mock_chat_completion(messages, model)
 
         headers = {
@@ -92,11 +105,14 @@ class QwenLLMClient:
         }
         if response_format:
             payload["response_format"] = response_format
+        if siliconflow and model.startswith(("Qwen/Qwen3.5-", "Qwen/Qwen3-")):
+            payload["enable_thinking"] = False
+        base = self.SILICONFLOW_BASE_URL if siliconflow else self.BASE_URL
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(
-                    f"{self.BASE_URL}/chat/completions",
+                    f"{base}/chat/completions",
                     headers=headers,
                     json=payload,
                 )
@@ -104,29 +120,40 @@ class QwenLLMClient:
                     data = resp.json()
                     elapsed_ms = int((time.time() - start_time) * 1000)
                     content = data["choices"][0]["message"]["content"]
-                    usage = data.get("usage", {})
+                    if siliconflow and (not isinstance(content, str) or not content.strip()):
+                        raise SiliconFlowCallError("硅基流动未返回有效文本。")
+                    usage = data.get("usage") or {}
+                    prompt_tokens = usage.get("prompt_tokens", 0 if siliconflow else 100)
+                    completion_tokens = usage.get("completion_tokens", 0 if siliconflow else 300)
                     return {
                         "content": content,
-                        "prompt_tokens": usage.get("prompt_tokens", 100),
-                        "completion_tokens": usage.get("completion_tokens", 300),
-                        "cost": (usage.get("prompt_tokens", 100) * 0.000004) + (usage.get("completion_tokens", 300) * 0.000012),
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "cost": 0.0 if siliconflow else prompt_tokens * 0.000004 + completion_tokens * 0.000012,
                         "elapsed_ms": elapsed_ms,
                         "model": model,
                         "is_mock": 0,
                     }
-                else:
-                    logger.warning("Qwen API failed (HTTP %s)", resp.status_code)
-                    return self._mock_chat_completion(messages, model)
+                logger.warning("Chat API failed (%s, HTTP %s)", self.service, resp.status_code)
+                if siliconflow:
+                    raise SiliconFlowCallError(f"硅基流动文本请求失败（HTTP {resp.status_code}）。请核对模型、API Key 和账户额度。")
+        except ProviderCallError:
+            raise
         except Exception as e:
-            logger.error("Qwen API failed (%s)", type(e).__name__)
-            return self._mock_chat_completion(messages, model)
+            logger.error("Chat API failed (%s, %s)", self.service, type(e).__name__)
+        if siliconflow:
+            raise SiliconFlowCallError("硅基流动文本服务暂不可用，请稍后重试。")
+        return self._mock_chat_completion(messages, model)
 
     async def get_embedding(self, text: str, model: str = "text-embedding-v4") -> List[float]:
-        """获取文本 Embedding 向量 (使用 DashScope HTTP API)"""
+        """Return a finite 1024-dimensional vector for the configured model."""
         await guard_model_request()
         model = self.embedding_model or model
+        siliconflow = self.service == "siliconflow"
         if not self.api_key or self.api_key.strip() == "":
             # 伪归一化向量 (1024 维)
+            if siliconflow:
+                raise SiliconFlowCallError("请配置硅基流动 API Key。")
             ensure_mock_allowed()
             return [0.03125] * 1024
 
@@ -134,29 +161,39 @@ class QwenLLMClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        payload = {"model": model, "input": {"texts": [text]}, "parameters": {"dimension": 1024}}
+        if siliconflow:
+            url = self.SILICONFLOW_BASE_URL + "/embeddings"
+            payload = {"model": model, "input": text}
+        else:
+            url = self.EMBEDDING_URL
+            payload = {"model": model, "input": {"texts": [text]}, "parameters": {"dimension": 1024}}
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
-                    self.EMBEDDING_URL,
+                    url,
                     headers=headers,
                     json=payload,
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    vector = data["output"]["embeddings"][0]["embedding"]
-                    import math
-                    if len(vector) != 1024 or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in vector):
+                    vector = data["data"][0]["embedding"] if siliconflow else data["output"]["embeddings"][0]["embedding"]
+                    if not isinstance(vector, list) or len(vector) != 1024 or not all(type(v) in (int, float) and math.isfinite(v) for v in vector):
+                        if siliconflow:
+                            raise SiliconFlowCallError("硅基流动向量模型需返回有效的 1024 维向量，请核对模型 ID。")
                         raise ProviderCallError("Invalid embedding dimension or value")
                     return vector
                 else:
                     logger.warning("Embedding API failed (HTTP %s)", resp.status_code)
-                    if resp.status_code in (401, 403) and (settings.is_production or not settings.ALLOW_MOCK_ASSETS):
-                        raise EmbeddingAccessError(resp)
-        except EmbeddingAccessError:
+                    if resp.status_code in (401, 403) and (siliconflow or settings.is_production or not settings.ALLOW_MOCK_ASSETS):
+                        raise EmbeddingAccessError(resp, self.service)
+                    if siliconflow:
+                        raise SiliconFlowCallError(f"硅基流动向量请求失败（HTTP {resp.status_code}）。请核对模型和账户额度。")
+        except (EmbeddingAccessError, SiliconFlowCallError):
             raise
         except Exception as e:
             logger.warning("Embedding API failed (%s)", type(e).__name__)
+        if siliconflow:
+            raise SiliconFlowCallError("硅基流动向量服务暂不可用，请稍后重试。")
         ensure_mock_allowed()
         return [0.03125] * 1024
 
@@ -392,7 +429,7 @@ class ProviderFactory:
         runtime = active_providers.get()
         binding = runtime.get("llm") if runtime else None
         if binding:
-            return QwenLLMClient(binding.api_key, binding.model, binding.embedding_model)
+            return QwenLLMClient(binding.api_key, binding.model, binding.embedding_model, service=binding.service)
         return QwenLLMClient()
 
     @staticmethod

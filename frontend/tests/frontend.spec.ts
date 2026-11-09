@@ -425,6 +425,62 @@ test('手机导航抽屉焦点、Escape 恢复与页面搜索', async ({ page })
   await expect(page).toHaveURL(/\/settings$/)
 })
 
+test('管理员从空列表添加硅基流动模型并主动测试文本和向量', async ({ page }) => {
+  const h = await setup(page, { mode: 'empty' })
+  let added = false
+  await page.setViewportSize({ width: 390, height: 844 })
+  const config = {
+    service: 'siliconflow', model: 'Qwen/Qwen3.5-4B',
+    embedding_model: 'BAAI/bge-m3', credential_source: 'stored',
+  }
+  h.handler = async (route, path) => {
+    if (path === '/providers' && route.request().method() === 'POST') {
+      expect(route.request().postDataJSON()).toEqual({
+        type: 'llm', name: '硅基流动备用', config, api_key: 'offline-model-key', is_default: 0,
+      })
+      added = true
+      await route.fulfill({ json: { code: 200, data: { id: 'siliconflow-1' } } })
+      return true
+    }
+    if (path === '/providers') {
+      await route.fulfill({ json: { code: 200, data: { items: added ? [{
+        id: 'siliconflow-1', type: 'llm', name: '硅基流动备用',
+        effective_config: config, is_default: 0, has_key: true,
+        configuration_status: 'applied', runtime_status: 'ready',
+        key_status: 'encrypted', adapter: '硅基流动 · 文本与向量',
+      }] : [] } } })
+      return true
+    }
+    if (path === '/providers/siliconflow-1/test') {
+      await route.fulfill({ json: { code: 200, data: {
+        status: 'success', mode: 'Real API', model: config.model,
+        embedding_model: config.embedding_model, embedding_dimensions: 1024,
+      } } })
+      return true
+    }
+    return false
+  }
+  await page.goto('/providers')
+  await page.getByRole('button', { name: '添加模型', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '添加模型', exact: true })
+  await expect(dialog.getByLabel('服务商')).toHaveValue('siliconflow')
+  await expect(dialog.getByLabel('模型 ID', { exact: true })).toHaveValue(config.model)
+  await expect(dialog.getByLabel('向量模型 ID')).toHaveValue(config.embedding_model)
+  await dialog.getByLabel('配置名称').fill('硅基流动备用')
+  await dialog.getByLabel('API Key', { exact: true }).fill('offline-model-key')
+  await expect(dialog.getByLabel('API Key', { exact: true })).toHaveAttribute('type', 'password')
+  await noOverflow(page)
+  await dialog.getByRole('button', { name: '添加模型', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '硅基流动备用' })).toBeVisible()
+  expect(h.writes.map((entry) => entry.path)).toEqual(['/providers'])
+  await page.getByRole('button', { name: '测试所选配置' }).click()
+  const confirm = page.getByRole('dialog', { name: '测试所选配置' })
+  await expect(confirm).toContainText('一条短文本和一条向量请求')
+  expect(h.writes).toHaveLength(1)
+  await confirm.getByRole('button', { name: '开始模型测试' }).click()
+  await expect(page.getByText(/配置测试通过.*BAAI\/bge-m3.*1024 维/)).toBeVisible()
+})
+
 test('租户模型配置保存生效，所选配置付费测试需主动确认', async ({ page }) => {
   const h = await setup(page)
   h.handler = async (route, path) => {

@@ -17,7 +17,7 @@ from app.clients.redis import redis_client
 from app.core.middlewares import RequestContextMiddleware
 from app.core.deps import get_current_user_and_tenant
 from fastapi import Depends, Request
-from app.clients.provider_factory import EmbeddingAccessError, ProviderCallError
+from app.clients.provider_factory import EmbeddingAccessError, ProviderCallError, SiliconFlowCallError
 from app.core.provider_keys import ProviderConfigurationError
 from fastapi.exceptions import RequestValidationError
 
@@ -71,7 +71,7 @@ app.include_router(api_v1_router)
 
 @app.exception_handler(ProviderCallError)
 async def provider_unavailable(request: Request, exc: ProviderCallError):
-    message = str(exc) if isinstance(exc, EmbeddingAccessError) else "模型服务不可用，请检查配置或稍后重试"
+    message = str(exc) if isinstance(exc, (EmbeddingAccessError, SiliconFlowCallError)) else "模型服务不可用，请检查配置或稍后重试"
     return JSONResponse(status_code=502, content={"code": 502, "data": None, "message": message})
 
 

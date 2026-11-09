@@ -52,6 +52,7 @@ async def save_provider_snapshot(snapshot: ProviderSnapshot) -> None:
             "provider_id": binding.provider_id,
             "model": binding.model,
             "embedding_model": binding.embedding_model,
+            "service": binding.service,
             "api_base": (binding.api_base or settings.DASHSCOPE_VIDEO_API_BASE)
             if kind == "video"
             else None,
@@ -100,6 +101,9 @@ async def frozen_provider_scope(kind: str):
         raise ProviderConfigurationError(
             "原始执行缺少模型配置快照，未调用其他模型替代。"
         )
+    service = stored.get("service", "dashscope")
+    if service not in ("dashscope", "siliconflow") or (kind != "llm" and service != "dashscope"):
+        raise ProviderConfigurationError("原始执行的模型服务不受支持。")
     binding = ProviderBinding(
         stored["provider_id"],
         stored["model"],
@@ -111,6 +115,7 @@ async def frozen_provider_scope(kind: str):
         ),
         stored["embedding_model"],
         api_base=stored.get("api_base"),
+        service=service,
     )
     token = active_providers.set(
         ProviderSnapshot(context.tenant_id, ((kind, binding),))
