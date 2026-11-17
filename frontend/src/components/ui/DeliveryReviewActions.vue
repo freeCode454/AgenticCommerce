@@ -24,6 +24,10 @@ const targetReport = ref('')
 const confirmed = ref(false)
 const note = ref('')
 const decisionFailure = ref('')
+const canReviewCopy = computed(() =>
+  props.detail.task.status === 'review_required'
+  || (props.detail.task.status === 'failed' && report.value?.status === 'review_error'),
+)
 const canDecide = computed(() =>
   props.detail.task.status === 'completed' && report.value?.passed === 1 && !!report.value.id
   && report.value.human_review?.decision === 'pending',
@@ -85,7 +89,7 @@ async function saveDecision() {
 </script>
 
 <template>
-  <section v-if="detail.task.status === 'review_required'" class="notice notice-warning wrap mt-5">
+  <section v-if="canReviewCopy" class="notice notice-warning wrap mt-5">
     <div>
       <p v-if="!detail.review_media_complete">当前任务缺少可复用的同轮真实素材。</p>
       <p v-else-if="checking || report?.status === 'reviewing'">文案重审进行中，可以刷新查看结果。</p>

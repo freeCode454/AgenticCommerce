@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.agent.recorder import record_node_execution
 from app.agent.state import AgentState
-from app.clients.provider_factory import ProviderFactory
+from app.clients.provider_factory import ProviderDiagnosticError, ProviderFactory
 from app.core.generation import (
     GenerationOutputError,
     VisualPlan,
@@ -87,7 +87,7 @@ async def visual_designer_node(state: AgentState) -> dict[str, Any]:
     except Exception as error:
         message = (
             str(error)
-            if isinstance(error, GenerationOutputError)
+            if isinstance(error, (GenerationOutputError, ProviderDiagnosticError))
             else "视觉方案生成失败，请检查服务配置后重试。"
         )
         logger.warning(

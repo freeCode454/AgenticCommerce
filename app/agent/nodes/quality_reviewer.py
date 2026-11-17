@@ -13,7 +13,7 @@ from app.agent.recorder import record_node_execution
 from app.agent.state import AgentState
 from app.clients.postgres import AsyncSessionLocal
 from app.clients.provider_factory import ProviderCallError, ProviderFactory
-from app.core.compliance import parse_review, rule_violations
+from app.core.compliance import REVIEW_UNAVAILABLE, parse_review, review_response_format, rule_violations
 from app.core.task_execution import active_execution, fence_execution
 from app.models.compliance import ComplianceReport
 from app.models.task import Task
@@ -47,15 +47,14 @@ async def quality_reviewer_node(state: AgentState) -> dict:
 【生成图片数】: {len(images)}
 【生成视频】: {'已就绪' if video else '无'}
 
-请严格按照 JSON 格式返回审核报告，格式如下：
+只返回一个 JSON 对象。passed 使用整数 1 表示通过，0 表示未通过。violations 和 suggestions 均为数组。
 {{
   "score": 95.0,
   "passed": 1,
   "dimensions": {{
     "brand_consistency": 96.0,
     "platform_compliance": 95.0,
-    "readability": 98.0,
-    "visual_quality": 92.0
+    "readability": 98.0
   }},
   "violations": [],
   "suggestions": ["文案符合平台合规要求，无夸大宣传", "首图符合纯白底规范"]
@@ -76,17 +75,23 @@ async def quality_reviewer_node(state: AgentState) -> dict:
     score, passed, dimensions = 0.0, 0, {}
     violations, suggestions = [], []
     llm_res = {}
+    available = False
     try:
-        llm_res = await llm_client.chat_completion(messages, model="qwen-plus")
+        llm_res = await llm_client.chat_completion(
+            messages, model="qwen-plus",
+            response_format=review_response_format(strict=llm_client.supports_json_schema is True),
+        )
         parsed = parse_review(llm_res.get("content", ""))
         score, passed, dimensions = parsed.score, parsed.passed, parsed.dimensions
         violations, suggestions = list(parsed.violations), list(parsed.suggestions)
         if llm_res.get("is_mock"):
             violations.append("模拟审核结果不可自动批准交付")
-    except (ValueError, TypeError, KeyError, IndexError, ProviderCallError):
-        violations = ["审核服务不可用或返回格式无效"]
+        else:
+            available = True
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError, ProviderCallError) as error:
+        violations = [REVIEW_UNAVAILABLE]
         suggestions = ["请重试审核或交由人工复核"]
-        logger.warning("Review unavailable or invalid: task_id=%s", task_id)
+        logger.warning("Review unavailable or invalid: task_id=%s, error=%s", task_id, type(error).__name__)
 
     violations.extend(rule_violations(" ".join([
         str(creative_plan.get("title", "")), str(creative_plan.get("bullets", [])),
@@ -98,7 +103,8 @@ async def quality_reviewer_node(state: AgentState) -> dict:
     if media_type in {"video", "both"} and (not video or not video.get("url") or video.get("is_mock")):
         violations.append("缺少真实视频产物")
     is_passed = passed == 1 and score >= 85.0 and not violations
-    should_retry = not is_passed and retry_count < state.get("max_retries", 2)
+    report_status = ("passed" if is_passed else "rejected") if available else "review_error"
+    should_retry = available and not is_passed and retry_count < state.get("max_retries", 2)
     next_retry_count = retry_count + (1 if should_retry else 0)
 
     # 持久化写入 ac_compliance_report 表
@@ -116,12 +122,14 @@ async def quality_reviewer_node(state: AgentState) -> dict:
                     violations=violations,
                     passed=1 if is_passed else 0,
                     suggestions=suggestions,
-                    status="passed" if is_passed else "rejected",
+                    status=report_status,
                 )
                 session.add(report_obj)
 
                 # 更新任务主表状态
                 new_status = "completed" if is_passed else ("retrying" if should_retry else "failed")
+                if not available:
+                    new_status = "review_required"
                 if active_execution.get() and not should_retry:
                     new_status = "running"  # Worker finalizes only after node persistence.
                 await session.execute(
@@ -138,6 +146,7 @@ async def quality_reviewer_node(state: AgentState) -> dict:
     current_report = {
         "score": score,
         "passed": 1 if is_passed else 0,
+        "status": report_status,
         "dimensions": dimensions,
         "violations": violations,
         "suggestions": suggestions,

@@ -10,7 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.agent.recorder import record_node_execution
 from app.agent.state import AgentState
 from app.clients.postgres import AsyncSessionLocal
-from app.clients.provider_factory import ProviderFactory
+from app.clients.provider_factory import ProviderDiagnosticError, ProviderFactory
 from app.core.generation import (
     CopyDraft,
     GenerationOutputError,
@@ -96,7 +96,7 @@ async def creative_planner_node(state: AgentState) -> dict[str, Any]:
     except Exception as error:
         message = (
             str(error)
-            if isinstance(error, GenerationOutputError)
+            if isinstance(error, (GenerationOutputError, ProviderDiagnosticError))
             else "文案生成或保存失败，请检查服务配置后重试。"
         )
         logger.warning(

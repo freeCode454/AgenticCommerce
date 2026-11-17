@@ -27,11 +27,44 @@ class ProviderCallError(RuntimeError):
     """Sanitized provider failure; never include request credentials or response bodies."""
 
 
-class SiliconFlowCallError(ProviderCallError):
+class ProviderDiagnosticError(ProviderCallError):
+    """A locally constructed diagnostic safe to display to users."""
+
+
+class SiliconFlowCallError(ProviderDiagnosticError):
     """A SiliconFlow diagnostic safe to display in the task and model settings."""
 
 
-class EmbeddingAccessError(ProviderCallError):
+class DashScopeCallError(ProviderDiagnosticError):
+    @classmethod
+    def rejected(cls, response: httpx.Response, operation: str) -> "DashScopeCallError":
+        try:
+            data = response.json()
+            code = data.get("code") if isinstance(data, dict) else None
+        except ValueError:
+            code = None
+        hints = {
+            "Endpoint.AccessDenied": "当前 API Key 无法使用配置的业务空间端点，请核对端点与 Key 所属空间。",
+            "Workspace.AccessDenied": "请核对 API Key 所属业务空间和访问权限。",
+            "Model.AccessDenied": "请在百炼授权当前业务空间及 API Key 调用该模型。",
+            "AccessDenied.Unpurchased": "请确认百炼服务及该模型已开通。",
+            "AllocationQuota.FreeTierOnly": "请检查免费额度和用完即停设置。",
+            "Arrearage": "请检查百炼账户余额和欠费状态。",
+            "InvalidApiKey": "请核对 API Key 及接口地域。",
+        }
+        status = response.status_code
+        hint = hints.get(code) if isinstance(code, str) else None
+        if not hint:
+            hint = {
+                400: "请核对模型和请求参数。",
+                401: "请核对 API Key 及接口地域。",
+                403: "请核对该模型的调用权限和账户额度。",
+                429: "模型触发限流，请稍后重试。",
+            }.get(status, "请检查百炼服务状态。")
+        return cls(f"百炼{operation}请求失败（HTTP {status}）。{hint}")
+
+
+class EmbeddingAccessError(ProviderDiagnosticError):
     """A rejected embedding request with a safe diagnostic for the workspace."""
 
     def __init__(self, response: httpx.Response, service: ProviderServiceName = "dashscope") -> None:
@@ -64,6 +97,7 @@ class QwenLLMClient:
     BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     EMBEDDING_URL = "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
     SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
+    FLASH_MODEL = "qwen3.8-flash"
 
     def __init__(
         self, api_key: str | None = None, model: str | None = None, embedding_model: str | None = None,
@@ -73,6 +107,10 @@ class QwenLLMClient:
         self.api_key = settings.DASHSCOPE_API_KEY if api_key is None and service == "dashscope" else api_key or ""
         self.model = model
         self.embedding_model = embedding_model
+
+    @property
+    def supports_json_schema(self) -> bool:
+        return self.service == "dashscope" and self.model == self.FLASH_MODEL
 
     async def chat_completion(
         self,
@@ -105,12 +143,16 @@ class QwenLLMClient:
         }
         if response_format:
             payload["response_format"] = response_format
-        if siliconflow and model.startswith(("Qwen/Qwen3.5-", "Qwen/Qwen3-")):
+        dashscope_flash = not siliconflow and model == self.FLASH_MODEL
+        if dashscope_flash or (
+            siliconflow and model.startswith(("Qwen/Qwen3.5-", "Qwen/Qwen3-"))
+        ):
             payload["enable_thinking"] = False
         base = self.SILICONFLOW_BASE_URL if siliconflow else self.BASE_URL
+        read_seconds = 120.0 if dashscope_flash else 60.0
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, read=read_seconds)) as client:
                 resp = await client.post(
                     f"{base}/chat/completions",
                     headers=headers,
@@ -120,8 +162,10 @@ class QwenLLMClient:
                     data = resp.json()
                     elapsed_ms = int((time.time() - start_time) * 1000)
                     content = data["choices"][0]["message"]["content"]
-                    if siliconflow and (not isinstance(content, str) or not content.strip()):
-                        raise SiliconFlowCallError("硅基流动未返回有效文本。")
+                    if not isinstance(content, str) or not content.strip():
+                        if siliconflow:
+                            raise SiliconFlowCallError("硅基流动未返回有效文本。")
+                        raise DashScopeCallError("百炼文本模型未返回有效内容。")
                     usage = data.get("usage") or {}
                     prompt_tokens = usage.get("prompt_tokens", 0 if siliconflow else 100)
                     completion_tokens = usage.get("completion_tokens", 0 if siliconflow else 300)
@@ -137,13 +181,19 @@ class QwenLLMClient:
                 logger.warning("Chat API failed (%s, HTTP %s)", self.service, resp.status_code)
                 if siliconflow:
                     raise SiliconFlowCallError(f"硅基流动文本请求失败（HTTP {resp.status_code}）。请核对模型、API Key 和账户额度。")
+                raise DashScopeCallError.rejected(resp, "文本")
+        except httpx.ReadTimeout:
+            provider = "硅基流动" if siliconflow else "百炼"
+            error_type = SiliconFlowCallError if siliconflow else DashScopeCallError
+            logger.warning("Chat read timed out (%s, %.0fs)", self.service, read_seconds)
+            raise error_type(f"等待{provider}文本模型响应超时（{read_seconds:.0f} 秒），请稍后重试。") from None
         except ProviderCallError:
             raise
-        except Exception as e:
+        except (httpx.RequestError, ValueError, TypeError, KeyError, IndexError) as e:
             logger.error("Chat API failed (%s, %s)", self.service, type(e).__name__)
-        if siliconflow:
-            raise SiliconFlowCallError("硅基流动文本服务暂不可用，请稍后重试。")
-        return self._mock_chat_completion(messages, model)
+            if siliconflow:
+                raise SiliconFlowCallError("硅基流动文本服务暂不可用，请稍后重试。") from None
+            raise DashScopeCallError("百炼文本服务暂不可用或响应无效，请稍后重试。") from None
 
     async def get_embedding(self, text: str, model: str = "text-embedding-v4") -> List[float]:
         """Return a finite 1024-dimensional vector for the configured model."""
@@ -261,8 +311,7 @@ class QwenLLMClient:
 class WanxImageClient:
     """通义万相 / Qwen Image 3.0 Pro 生图客户端"""
 
-    # 用户指定的专有 Workspace API Endpoint
-    SUBMIT_URL = "https://llm-pqoya4ttmg66ljtm.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+    SUBMIT_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
 
     # 高清商品展示样本图 (Unsplash 高清商业级正版素材)
     DEMO_PRODUCT_IMAGES = [
@@ -310,39 +359,35 @@ class WanxImageClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, read=180.0)) as client:
                 resp = await client.post(self.SUBMIT_URL, headers=headers, json=payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    # Qwen Image 3.0 Pro multimodal generation API 返回的是同步图像内容
-                    # 结构解析: data["output"]["choices"][0]["message"]["content"][0]["image"]
-                    choices = data.get("output", {}).get("choices", [])
-                    urls = []
-                    for choice in choices:
-                        content_list = choice.get("message", {}).get("content", [])
-                        for item in content_list:
-                            url = item.get("image") if isinstance(item, dict) else None
-                            if isinstance(url, str) and url.startswith("https://"):
-                                urls.append(url)
-                    
-                    if urls:
-                        elapsed_ms = int((time.time() - start_time) * 1000)
-                        return {
-                            "urls": urls,
-                            "task_id": data.get("request_id", ""),
-                            "elapsed_ms": elapsed_ms,
-                            "cost": 0.08 * len(urls),
-                            "is_mock": 0,
-                            "model": model,
-                        }
-                    else:
-                        logger.warning("Qwen Image returned no image URL")
-                else:
-                    logger.warning("Qwen Image failed (HTTP %s)", resp.status_code)
-        except Exception as e:
-            logger.error("Qwen Image failed (%s)", type(e).__name__)
+        except httpx.ReadTimeout:
+            raise DashScopeCallError("等待百炼生图响应超时（180 秒），请先核对厂商任务和费用。") from None
+        except httpx.RequestError:
+            raise DashScopeCallError("百炼生图连接中断，请先核对厂商任务和费用。") from None
+        if resp.status_code != 200:
+            raise DashScopeCallError.rejected(resp, "生图")
 
-        return self._mock_generate_images(prompt, n, size, model)
+        try:
+            data = resp.json()
+            urls = []
+            for choice in data["output"]["choices"]:
+                for item in choice["message"]["content"]:
+                    url = item.get("image") if isinstance(item, dict) else None
+                    if isinstance(url, str) and url.startswith("https://"):
+                        urls.append(url)
+        except (ValueError, KeyError, TypeError):
+            raise DashScopeCallError("百炼生图响应格式无效，请检查厂商任务记录。") from None
+        if len(urls) != n:
+            raise DashScopeCallError("百炼生图返回的素材数量与请求不符，请检查厂商任务记录。")
+        return {
+            "urls": urls,
+            "task_id": data.get("request_id", ""),
+            "elapsed_ms": int((time.time() - start_time) * 1000),
+            "cost": 0.08 * len(urls),
+            "is_mock": 0,
+            "model": model,
+        }
 
     def _mock_generate_images(self, prompt: str, n: int, size: str, model: str) -> Dict[str, Any]:
         """返回高质量电商商品图片链接与详细元数据"""

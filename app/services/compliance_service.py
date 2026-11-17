@@ -12,7 +12,7 @@ from app.models.compliance import ComplianceReport
 from app.models.sku import Sku
 from app.clients.provider_factory import ProviderFactory
 from app.clients.provider_factory import ProviderCallError
-from app.core.compliance import parse_review, rule_violations
+from app.core.compliance import REVIEW_UNAVAILABLE, parse_review, review_response_format, rule_violations
 from app.services.delivery_content import report_data
 
 logger = logging.getLogger("compliance_service")
@@ -76,8 +76,8 @@ class ComplianceService(BaseService):
 【内容】: {content}
 【目标平台】: {target_platform}
 
-请检测是否包含绝对化词汇（如'世界第一'、'最佳'）、虚假夸大或平台禁止宣称，并返回 JSON 报告：
-{{"score": 95, "passed": 1, "violations": [], "suggestions": ["文案符合平台规范"]}}
+请检测绝对化词汇、虚假夸大或平台禁止宣称。只返回一个 JSON 对象，passed 使用整数 1 表示通过，0 表示未通过：
+{{"score": 95, "passed": 1, "dimensions": {{"brand_consistency": 96, "platform_compliance": 95, "readability": 94}}, "violations": [], "suggestions": ["文案符合平台规范"]}}
 """
         if facts is not None:
             prompt += (
@@ -95,7 +95,10 @@ class ComplianceService(BaseService):
         result = {}
         available = False
         try:
-            result = await llm_client.chat_completion(messages, model="qwen-plus")
+            result = await llm_client.chat_completion(
+                messages, model="qwen-plus",
+                response_format=review_response_format(strict=llm_client.supports_json_schema is True),
+            )
             review = parse_review(result.get("content", ""))
             score, model_passed, dimensions = review.score, review.passed, review.dimensions
             found_violations.extend(review.violations)
@@ -105,7 +108,7 @@ class ComplianceService(BaseService):
             else:
                 available = True
         except (ValueError, TypeError, KeyError, IndexError, AttributeError, ProviderCallError):
-            found_violations.append("审核服务不可用或返回格式无效")
+            found_violations.append(REVIEW_UNAVAILABLE)
         passed = int(model_passed == 1 and score >= 85 and not found_violations)
 
         return {

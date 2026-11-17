@@ -14,8 +14,8 @@ from sqlalchemy import and_, case, func, or_, select, text
 
 from app.api.task_config import TaskConfig
 from app.clients.postgres import AsyncSessionLocal, engine
-from app.clients.provider_factory import EmbeddingAccessError, SiliconFlowCallError
-from app.clients.wan_video import RemoteVideoPending, SubmissionUnknownError
+from app.clients.provider_factory import ProviderDiagnosticError
+from app.clients.wan_video import RemoteVideoPending, SubmissionUnknownError, VideoProviderError
 from app.conf.config import settings
 from app.core.task_execution import ExecutionContext, ExecutionSupersededError, active_execution
 from app.models.base import utc_now
@@ -393,11 +393,11 @@ class TaskWorker:
                         "恢复记录不完整，未自动重新提交视频任务，请核对厂商记录。",
                     )
                 execution.status, execution.finished_at, execution.error_message = (
-                    status,
+                    "failed" if status == "review_required" else status,
                     utc_now(),
                     message,
                 )
-                task.status = "completed" if status == "completed" else "failed"
+                task.status = status if status in {"completed", "review_required"} else "failed"
                 task.error_message = message
                 execution.next_poll_at = None
                 if status == "interrupted":
@@ -464,13 +464,13 @@ class TaskWorker:
                     return False
                 result = await invoke
                 passed = result.get("is_passed") is True
-                await self.finish(
-                    context,
-                    "completed" if passed else "failed",
-                    None
-                    if passed
-                    else "审核未通过或生成结果不完整，请检查本次执行记录。",
-                )
+                reports = result.get("quality_reports") or []
+                if passed:
+                    await self.finish(context, "completed")
+                elif reports and reports[-1].get("status") == "review_error":
+                    await self.finish(context, "review_required", "审核服务异常，可以沿用本轮素材重审文案。")
+                else:
+                    await self.finish(context, "failed", "审核未通过或生成结果不完整，请检查本次执行记录。")
                 return True
             except RemoteVideoPending:
                 if context:
@@ -501,7 +501,7 @@ class TaskWorker:
                 )
                 if context:
                     message = (
-                        str(error) if isinstance(error, (EmbeddingAccessError, SiliconFlowCallError))
+                        str(error) if isinstance(error, (ProviderDiagnosticError, VideoProviderError))
                         else f"工作流执行失败 ({type(error).__name__})，请检查本次节点记录和模型配置。"
                     )
                     await self.finish(

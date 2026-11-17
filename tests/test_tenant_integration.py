@@ -286,11 +286,12 @@ async def test_editing_copy_invalidates_previous_approval(context):
     assert (await context["client"].post("/api/v1/packages/export",json={"task_id":context["task"]})).status_code == 409
 
 
-@pytest.mark.parametrize("edit_during_review", [False, True])
-async def test_copy_only_review_reuses_media_and_discards_superseded_result(context, monkeypatch, edit_during_review):
+@pytest.mark.parametrize(("edit_during_review", "legacy_error"), [(False, False), (True, False), (False, True)])
+async def test_copy_only_review_reuses_media_and_discards_superseded_result(context, monkeypatch, edit_during_review, legacy_error):
     from unittest.mock import AsyncMock
 
     from sqlalchemy import select
+    from app.core.compliance import REVIEW_UNAVAILABLE
     from app.models.asset import Asset
     from app.models.task_node_run import TaskNodeRun
     from app.services.compliance_service import ComplianceService
@@ -306,20 +307,29 @@ async def test_copy_only_review_reuses_media_and_discards_superseded_result(cont
     copy = Copy(**common, title="Original copy", bullets=[f"Fact {i}" for i in range(5)],
                 description="Product description", keywords=[f"Keyword {i}" for i in range(5)])
     report = ComplianceReport(**common, score=96, passed=1, status="passed")
+    if legacy_error:
+        task.status = "failed"
+        report.score, report.passed, report.status = 0, 0, "rejected"
+        report.violations = [REVIEW_UNAVAILABLE]
     assets = [Asset(**common, type=kind, sub_type=subtype, generation_round=0, status="completed",
                     url="https://example.test/file") for kind, subtype in DELIVERY_MEDIA]
     session.add_all([copy, report, *assets])
     await session.flush()
     asset_ids = {asset.id for asset in assets}
-    assert (await client.post(f"/api/v1/compliance/tasks/{task_id}/human-review", json={
-        "report_id": report.id, "decision": "rejected", "note": "Revise the title",
-    })).json()["data"]["human_review"]["decision"] == "rejected"
-    manifest = (await client.post("/api/v1/packages/export", json={"task_id": task_id})).json()["data"]
-    assert "已驳回" in manifest["download_block_reason"]
-    assert (await client.put(f"/api/v1/copies/{copy.id}", json={"title": "Edited title"})).status_code == 200
+    if legacy_error:
+        detail = (await client.get(f"/api/v1/tasks/{task_id}")).json()["data"]
+        assert detail["compliance_report"]["status"] == "review_error"
+    else:
+        assert (await client.post(f"/api/v1/compliance/tasks/{task_id}/human-review", json={
+            "report_id": report.id, "decision": "rejected", "note": "Revise the title",
+        })).json()["data"]["human_review"]["decision"] == "rejected"
+        manifest = (await client.post("/api/v1/packages/export", json={"task_id": task_id})).json()["data"]
+        assert "已驳回" in manifest["download_block_reason"]
+        assert (await client.put(f"/api/v1/copies/{copy.id}", json={"title": "Edited title"})).status_code == 200
 
     async def evaluate(title, content, *, facts):
-        assert title == "Edited title" and "Product description" in content and facts["name"] == "A"
+        assert title == ("Original copy" if legacy_error else "Edited title")
+        assert "Product description" in content and facts["name"] == "A"
         if edit_during_review:
             await CopyService(session).update_copy(tenant_id, copy.id, {"title": "Newer title"})
         return {

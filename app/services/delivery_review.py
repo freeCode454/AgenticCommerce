@@ -71,9 +71,10 @@ async def review_copy(
     ))).scalar_one_or_none()
     if previous is not None:
         return report_data(previous)
-    if task.status != "review_required":
-        raise TaskConflictError("当前任务没有待重新审核的文案")
     prior_report = await latest_report(db, task)
+    recover_review = task.status == "failed" and prior_report and report_status(prior_report) == "review_error"
+    if task.status != "review_required" and not recover_review:
+        raise TaskConflictError("当前任务没有待重新审核的文案")
     if (prior_report.id if prior_report else None) != expected_report_id:
         raise TaskConflictError("文案审核状态已更新，请刷新工作台后确认")
     if prior_report and report_status(prior_report) == "reviewing":
@@ -103,6 +104,10 @@ async def review_copy(
         request_key=request_key, created_by=user_id, status="reviewing", passed=0, score=0,
     )
     async with provider_scope(tenant_id, db, kinds=("llm",)):
+        if recover_review:
+            task.status = "review_required"
+            task.error_message = None
+            await refresh_batch(db, tenant_id, task.batch_id)
         db.add(report)
         await db.commit()  # Persist the paid request's identity before contacting the model.
         start = time.monotonic()

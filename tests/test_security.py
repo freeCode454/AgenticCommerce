@@ -124,6 +124,7 @@ async def test_provider_error_cannot_turn_into_mock_success(monkeypatch, status)
     ('{"score":99,"passed":0,"violations":[],"suggestions":[]}', False, False),
     ('{"score":99,"passed":1,"violations":[],"suggestions":[]}', True, False),
     ('{"score":99,"passed":1,"violations":[],"suggestions":[]}', False, True),
+    ('{"score":99,"passed":true,"violations":[],"suggestions":[]}', False, True),
     ('{"score":99,"violations":[],"suggestions":[]}', False, False),
     ('{"score":999,"passed":1,"violations":[],"suggestions":[]}', False, False),
 ])
@@ -137,6 +138,10 @@ async def test_review_is_fail_closed(monkeypatch, content, is_mock, expected):
         "generated_images": [{"url": "https://assets.example.test/image.png", "is_mock": 0}],
     })
     assert result["is_passed"] is expected
+    assert llm.chat_completion.call_args.kwargs["response_format"] == {"type": "json_object"}
+    if content == "invalid JSON":
+        assert result["quality_reports"][-1]["status"] == "review_error"
+        assert result["should_retry"] is False
 
 
 async def test_rule_scan_cannot_be_overridden_by_high_model_score(monkeypatch):

@@ -275,7 +275,8 @@ async def test_selected_model_and_key_are_used_in_actual_http_payload(
     )
 
 
-async def test_qwen_image_reads_native_image_items_and_sends_dimensions(monkeypatch):
+@pytest.mark.parametrize("model", ["qwen-image-2.1-pro", "qwen-image-3.0-pro"])
+async def test_qwen_image_reads_native_image_items_and_sends_dimensions(monkeypatch, model):
     import httpx
     from app.clients import provider_factory as clients
 
@@ -287,12 +288,58 @@ async def test_qwen_image_reads_native_image_items_and_sends_dimensions(monkeypa
         "usage": {"output_image_count": 1, "output_height": 1024, "output_width": 1024},
     })
     monkeypatch.setattr(clients.httpx, "AsyncClient", lambda **kwargs: fake)
-    image = clients.ProviderFactory.get_image_client()
-    image.api_key = "offline-wire-test"
+    image = clients.WanxImageClient(api_key="offline-wire-test", model=model)
     result = await image.generate_images("Product photo", n=1, size="1024*1024")
     assert result["is_mock"] == 0 and result["urls"] == [expected]
-    parameters = fake.post.call_args.kwargs["json"]["parameters"]
+    payload = fake.post.call_args.kwargs["json"]
+    assert payload["model"] == model
+    parameters = payload["parameters"]
     assert parameters["n"] == 1 and parameters["size"] == "1024*1024"
+
+
+@pytest.mark.parametrize("model,read_seconds", [("qwen3.8-flash", 120), ("qwen-plus", 60)])
+async def test_dashscope_read_timeout_never_reposts_or_falls_back(monkeypatch, model, read_seconds):
+    import httpx
+    from app.clients import provider_factory as clients
+
+    fake = AsyncMock()
+    fake.__aenter__.return_value = fake
+    fake.post.side_effect = httpx.ReadTimeout("private transport details")
+    factory = Mock(return_value=fake)
+    monkeypatch.setattr(clients.httpx, "AsyncClient", factory)
+    monkeypatch.setattr(settings, "ALLOW_MOCK_ASSETS", True)
+
+    llm = clients.QwenLLMClient(api_key="offline-key", model=model)
+    with pytest.raises(clients.DashScopeCallError, match=f"超时（{read_seconds} 秒）"):
+        await llm.chat_completion(
+            [{"role": "user", "content": "Return JSON."}],
+            response_format={"type": "json_object"},
+        )
+    fake.post.assert_awaited_once()
+    assert factory.call_args.kwargs["timeout"].read == read_seconds
+    payload = fake.post.call_args.kwargs["json"]
+    assert payload["response_format"] == {"type": "json_object"}
+    if model == "qwen3.8-flash":
+        assert payload["enable_thinking"] is False
+    else:
+        assert "enable_thinking" not in payload
+
+
+async def test_dashscope_image_denial_surfaces_safe_diagnostic(monkeypatch):
+    import httpx
+    from app.clients import provider_factory as clients
+
+    fake = AsyncMock()
+    fake.__aenter__.return_value = fake
+    fake.post.return_value = httpx.Response(403, json={
+        "code": "Model.AccessDenied", "message": "raw provider data",
+    })
+    monkeypatch.setattr(clients.httpx, "AsyncClient", lambda **kwargs: fake)
+    monkeypatch.setattr(settings, "ALLOW_MOCK_ASSETS", True)
+    with pytest.raises(clients.DashScopeCallError, match=r"HTTP 403.*授权") as error:
+        await clients.WanxImageClient(api_key="offline-key").generate_images("Product photo")
+    fake.post.assert_awaited_once()
+    assert "raw provider data" not in str(error.value)
 
 
 async def test_embedding_denial_reports_permission_without_provider_body(monkeypatch):

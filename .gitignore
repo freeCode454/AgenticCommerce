@@ -37,6 +37,7 @@ env/
 
 # Local assistant state, credentials and process records
 .claude/
+.workbuddy/
 .workbuddy-ai/
 .codex/
 .agents/

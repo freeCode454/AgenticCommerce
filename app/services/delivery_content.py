@@ -5,6 +5,7 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.compliance import REVIEW_UNAVAILABLE
 from app.models.asset import Asset
 from app.models.base import utc_now
 from app.models.compliance import ComplianceReport
@@ -18,6 +19,8 @@ REVIEW_LEASE = timedelta(seconds=120)
 def report_status(report: ComplianceReport) -> str:
     if report.status == "reviewing" and utc_now() >= report.create_time + REVIEW_LEASE:
         return "review_interrupted"
+    if report.status == "rejected" and REVIEW_UNAVAILABLE in (report.violations or []):
+        return "review_error"
     return report.status
 
 

@@ -21,7 +21,7 @@ const route = useRoute(),
 const {
   detail,
   nodes,
-  latest,
+  latest: latestByNode,
   loading,
   refreshing,
   error,
@@ -74,10 +74,26 @@ const imageAssets = computed(
     () => detail.value?.assets.filter((asset) => asset.type === 'image') || [],
   ),
   videoAssets = computed(() => detail.value?.assets.filter((asset) => asset.type === 'video') || [])
+const reviewReport = computed(() => detail.value?.compliance_report)
+const latest = computed(() => {
+  const records = latestByNode.value
+  const copyReview = records.copy_review
+  const report = reviewReport.value
+  const output = copyReview?.output_data
+  if (report && copyReview && output && typeof output === 'object' && 'report_id' in output
+    && report.id === output.report_id
+    && ['passed', 'rejected', 'review_error'].includes(report.status || '')) {
+    return { ...records, quality_reviewer: copyReview }
+  }
+  return records
+})
 const completed = computed(
   () => steps.filter((step) => latest.value[step.key]?.status === 'success').length,
 )
-const reviewReport = computed(() => detail.value?.compliance_report)
+const canRecoverReview = computed(() =>
+  detail.value?.task.status === 'failed' && reviewReport.value?.status === 'review_error'
+    && detail.value.review_media_complete,
+)
 async function retry() {
   if (retrying.value || running.value) return
   if (
@@ -184,7 +200,7 @@ function openNode(key: string) {
             {{ canceling ? '正在取消…' : '取消任务' }}
           </button>
           <button
-            v-if="['failed', 'canceled'].includes(detail.task.status) || reviewReport?.human_review?.decision === 'rejected'
+            v-if="(['failed', 'canceled'].includes(detail.task.status) && !canRecoverReview) || reviewReport?.human_review?.decision === 'rejected'
               || (detail.task.status === 'review_required' && !detail.review_media_complete)"
             class="btn btn-secondary btn-sm"
             :disabled="retrying || canceling"
@@ -207,6 +223,7 @@ function openNode(key: string) {
             '任务执行失败。请查看失败节点的执行记录，检查模型配置或重试。'
           }}
         </span>
+        <button v-if="canRecoverReview" class="text-button" @click="tab = 'review'">前往审核</button>
       </div>
       <div v-if="detail.task.status === 'review_required'" class="notice notice-warning">
         <AppIcon name="info" />
